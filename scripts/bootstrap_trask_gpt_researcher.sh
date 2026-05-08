@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap a Python venv with GPT Researcher deps for Trask headless research.
+# Bootstrap a Python venv with ai-researchwizard deps for Trask headless research.
 # Usage (from repo root):
 #   bash scripts/bootstrap_trask_gpt_researcher.sh
 # Then set TRASK_GPT_RESEARCHER_PYTHON to .venv-trask-gptr/bin/python

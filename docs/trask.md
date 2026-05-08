@@ -29,7 +29,7 @@ Ask a KOTOR question and get a source-backed answer.
 | `query` | yes | Question or topic (max 200 characters) |
 
 **Behavior:**
-- Runs the vendored **headless GPT Researcher** (`vendor/ai-researchwizard/trask_headless_research.py`) — same core
+- Runs the vendored **headless ai-researchwizard** (`vendor/ai-researchwizard/trask_headless_research.py`) — same core
   engine as `cli.py`, **not** the FastAPI/Web UI server.
 - Restricts research to Trask's approved source list.
 - Returns a short Discord-friendly answer with inline numeric citations and a compact `Sources`
@@ -103,14 +103,14 @@ The following environment variables control Trask's scope:
 | `TRASK_APPROVED_CHANNEL_IDS` | Comma-separated channel IDs where `/ask` is allowed |
 | `TRASK_SLASH_GUILD_IDS` | Comma-separated guild IDs where slash commands are **registered** (use when the bot serves multiple servers; overrides single-guild deploy when non-empty) |
 | `TRASK_GPT_RESEARCHER_ROOT` | Absolute path to `vendor/ai-researchwizard` (optional if you run the bot from the monorepo root — auto-detected when `vendor/ai-researchwizard/gpt_researcher` exists) |
-| `TRASK_GPT_RESEARCHER_PYTHON` | Python interpreter for the headless runner (default `python`; point at the venv that has `gpt-researcher` deps installed) |
+| `TRASK_GPT_RESEARCHER_PYTHON` | Python interpreter for the headless runner (default `python`; point at the venv that has `ai-researchwizard` deps installed) |
 | `TRASK_GPT_RESEARCHER_SCRIPT` | Optional absolute path to override `trask_headless_research.py` |
 | `TRASK_RESEARCHWIZARD_TIMEOUT_MS` | Max time for one research run (default `120000`) |
 
 When `TRASK_APPROVED_CHANNEL_IDS` is set, Trask only answers `/ask` in those channels. It does not
 perform blanket server-history reads unless proactive mode is enabled (see below).
 
-### GPT Researcher Python environment (required for `/ask` and Holocron research)
+### ai-researchwizard Python environment (required for `/ask` and Holocron research)
 
 Trask spawns **`vendor/ai-researchwizard/trask_headless_research.py`**, which loads `.env` via
 **`python-dotenv`** and imports the vendored **`gpt_researcher`** package. Use a dedicated virtualenv
@@ -122,9 +122,10 @@ that environment already has the dependencies).
 - **Windows (PowerShell):** `.\scripts\bootstrap_trask_gpt_researcher.ps1`
 - **macOS / Linux:** `bash scripts/bootstrap_trask_gpt_researcher.sh`
 
-Each script creates **`.venv-trask-gptr`** at the repo root and runs  
+Each script creates **`.venv-trask-gptr`** at the repo root and runs
+
 `pip install -r vendor/ai-researchwizard/requirements.txt` (includes **`python-dotenv`** and the rest
-of GPT Researcher’s stack).
+of ai-researchwizard’s stack).
 
 **Manual**
 
@@ -165,7 +166,7 @@ pnpm holocron:e2e
 ```
 
 This exercises the composer, relevance gating, and at least one full **`/api/trask/ask`** round-trip
-(answer with **Sources**, or **Research service error** if Python GPT Researcher keys are missing).
+(answer with **Sources**, or **Research service error** if Python ai-researchwizard keys are missing).
 
 ### Discord bot slash commands (REST smoke)
 
@@ -201,7 +202,7 @@ not the long embed briefing).
    `TRASK_PROACTIVE_COMPETING_MIN_LENGTH` characters long, Trask stays silent so humans can answer first.
 3. **Classifier** (`TRASK_PROACTIVE_CLASSIFIER_MODEL`, default `gpt-4o-mini`): JSON output gates obvious non-questions
    and off-topic chatter.
-4. **Research**: runs headless GPT Researcher with a **brief** digest prompt and a short Discord rewrite.
+4. **Research**: runs headless ai-researchwizard with a **brief** digest prompt and a short Discord rewrite.
 5. **Semantic gate** (`TRASK_PROACTIVE_SIMILARITY_THRESHOLD`): embedding similarity between the user question / brief
    answer and the normalized report must clear the threshold, reducing confident-but-ungrounded replies.
 6. **Per-user cooldown** (`TRASK_PROACTIVE_USER_COOLDOWN_MS`) limits spam.
@@ -219,7 +220,7 @@ may not bind** the option—rather than pasting a full pseudo-command string.
 
 ## Current Limitations
 
-- Trask depends on a working **Python + GPT Researcher** install under `TRASK_GPT_RESEARCHER_ROOT` (API keys such as
+- Trask depends on a working **Python + ai-researchwizard** install under `TRASK_GPT_RESEARCHER_ROOT` (API keys such as
   `OPENAI_API_KEY` / retriever keys live in `.env` loaded by the headless script).
 - The vendored backend defaults to a report-oriented workflow, so prompt and formatting controls
   still need refinement to keep replies concise under Discord limits.
@@ -233,16 +234,16 @@ may not bind** the option—rather than pasting a full pseudo-command string.
 
 | Piece | Role |
 |---|---|
-| `@openkotor/trask` | Spawns `trask_headless_research.py` (GPT Researcher); optional OpenAI-compatible rewrite pass |
+| `@openkotor/trask` | Spawns `trask_headless_research.py` (ai-researchwizard); optional OpenAI-compatible rewrite pass |
 | `@openkotor/trask-http` | Express router factory: `GET/POST /sources`, `/history`, `/ask` under `/api/trask` with pluggable auth |
 | `apps/trask-bot` | Discord slash commands; optional proactive listener uses `@openkotor/trask` brief answers + LLM gates |
 | `apps/trask-http-server` | Standalone API + optional static serving of `apps/holocron-web/dist` |
 | `apps/pazaak-bot` | Still mounts the same router at `/api/trask` for PazaakWorld |
 | `apps/holocron-web` | Holocron SPA; **default** path calls the Trask HTTP API (legacy Spark simulation behind `VITE_TRASK_LEGACY_SPARK=1`) |
-| `vendor/ai-researchwizard` | Upstream GPT Researcher tree; Trask uses `trask_headless_research.py` (+ optional `cli.py` for humans) |
+| `vendor/ai-researchwizard` | Upstream ai-researchwizard tree; Trask uses `trask_headless_research.py` (+ optional `cli.py` for humans) |
 | `vendor/llm_fallbacks` | Python ordering for free/chat models; optional helper script for GPTR env |
 
-Trask Q&A does **not** require PazaakWorld: run `trask-http-server` + `holocron-web` against the same headless GPT Researcher
+Trask Q&A does **not** require PazaakWorld: run `trask-http-server` + `holocron-web` against the same headless ai-researchwizard
 install on disk (`TRASK_GPT_RESEARCHER_ROOT`).
 
 ## Standalone HTTP server (`apps/trask-http-server`)
@@ -306,7 +307,7 @@ Trask remains available from PazaakWorld after sign-in (**◉ Ask Trask**). It u
 | `GET` | `/api/trask/history?limit=N` | Recent questions for the authenticated user |
 | `POST` | `/api/trask/ask` | Submit a question; returns a `TraskQueryRecord` |
 
-Returns **503** if the Trask runtime is not wired (pazaak-bot) or GPT Researcher root/script cannot run (`trask-http-server` still mounts routes but handlers error when misconfigured).
+Returns **503** if the Trask runtime is not wired (pazaak-bot) or ai-researchwizard root/script cannot run (`trask-http-server` still mounts routes but handlers error when misconfigured).
 
 ### DTO shapes
 
@@ -335,14 +336,14 @@ interface TraskQueryRecord {
 
 ## LLM configuration
 
-### GPT Researcher (`vendor/ai-researchwizard`)
+### ai-researchwizard (`vendor/ai-researchwizard`)
 
 Install Python deps in a venv rooted at `vendor/ai-researchwizard` (see upstream README), then point
 `TRASK_GPT_RESEARCHER_PYTHON` at that interpreter. Configure the stack with standard upstream env vars, for example:
 
 - `OPENAI_API_KEY` / `OPENROUTER_API_KEY` — LLM + embeddings
-- `TAVILY_API_KEY` or other retriever keys required by your GPTR config
-- `FAST_LLM` / `SMART_LLM` — set to `openrouter/auto` or a concrete LiteLLM model id
+- `TAVILY_API_KEY` is optional (only needed if you explicitly choose Tavily retrievers)
+- `FAST_LLM` / `SMART_LLM` / `STRATEGIC_LLM` are optional; defaults are resolved automatically (`openrouter:openrouter/auto` when OpenRouter key exists, otherwise vendored `llm_fallbacks`)
 
 When OpenRouter is unavailable, generate conservative defaults from vendored **`llm_fallbacks`**:
 
@@ -354,7 +355,7 @@ Paste or export the printed `FAST_LLM=` / `SMART_LLM=` lines into the same `.env
 
 ### Post-report rewrite (`@openkotor/trask`)
 
-After GPT Researcher returns a report, Trask optionally calls an **OpenAI-compatible** chat completion to tighten Discord formatting.
+After ai-researchwizard returns a report, Trask optionally calls an **OpenAI-compatible** chat completion to tighten Discord formatting.
 
 | Variable | Purpose |
 |---|---|
@@ -382,5 +383,5 @@ Uses `JsonTraskQueryRepository` from `@openkotor/persistence`.
 
 ## Next Phase
 
-- Tighten the adapter contract with GPT Researcher for structured citations instead of formatting plain report text.
+- Tighten the adapter contract with ai-researchwizard for structured citations instead of formatting plain report text.
 - Feature flag to hide the PazaakWorld **Ask Trask** entry when the API returns 503 at startup.

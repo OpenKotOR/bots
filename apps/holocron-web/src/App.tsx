@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { useKV } from '@github/spark/hooks'
-import { Message as MessageType, AgentResult, SourceWeight, DEFAULT_SOURCE_WEIGHTS, Conversation, isMessageArray } from '@/lib/types'
+import { Message as MessageType, AgentResult, SourceWeight, DEFAULT_SOURCE_WEIGHTS, Conversation, QueryType, MessageResearchStep, isMessageArray } from '@/lib/types'
 import { Message } from '@/components/Message'
 import { AgentPanel } from '@/components/AgentPanel'
 import { ConversationSidebar } from '@/components/ConversationSidebar'
@@ -31,13 +30,12 @@ import {
   detectQuestionRelevance,
   performMultiAgentRetrieval,
   aggregateAnswer,
-  checkIfRepeatQuestion,
   classifyQueryType,
 } from '@/lib/qa-engine'
 import { conversationDisplayTitle } from '@/lib/conversation-utils'
+import { usePersistentLocalState } from '@/lib/persistent-local-state'
 import {
   traskAsk,
-  traskErrorMessageFromUnknown,
   traskFetchSession,
   traskGetThread,
   traskListHistory,
@@ -51,6 +49,171 @@ import {
 import { priorUserQuestionsFromOtherThreads } from '@/lib/starter-suggestions'
 
 const legacySparkMode = import.meta.env.VITE_TRASK_LEGACY_SPARK === '1'
+const HOLOCRON_RESEARCH_JOBS_KEY = 'holocron-research-jobs'
+const RESEARCH_RETRY_BASE_MS = 5_000
+const RESEARCH_RETRY_MAX_MS = 90_000
+
+type HolocronResearchJobState = 'queued' | 'submitted'
+
+type HolocronResearchJob = {
+  clientId: string
+  conversationId: string
+  threadId: string
+  question: string
+  assistantMessageId: string
+  queryType: QueryType
+  serverQueryId?: string
+  state: HolocronResearchJobState
+  attemptCount: number
+  pollFailures: number
+  createdAt: number
+  updatedAt: number
+  nextAttemptAt: number
+}
+
+function isHolocronResearchJob(value: unknown): value is HolocronResearchJob {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const o = value as Record<string, unknown>
+  return (
+    typeof o.clientId === 'string'
+    && typeof o.conversationId === 'string'
+    && typeof o.threadId === 'string'
+    && typeof o.question === 'string'
+    && typeof o.assistantMessageId === 'string'
+    && (o.state === 'queued' || o.state === 'submitted')
+    && typeof o.attemptCount === 'number'
+    && typeof o.pollFailures === 'number'
+    && typeof o.createdAt === 'number'
+    && typeof o.updatedAt === 'number'
+    && typeof o.nextAttemptAt === 'number'
+  )
+}
+
+function normalizeResearchJobs(value: unknown): HolocronResearchJob[] {
+  return Array.isArray(value) ? value.filter(isHolocronResearchJob) : []
+}
+
+function researchRetryDelayMs(attemptCount: number): number {
+  const exp = Math.min(6, Math.max(0, attemptCount))
+  const jitter = Math.floor(Math.random() * 1_500)
+  return Math.min(RESEARCH_RETRY_MAX_MS, RESEARCH_RETRY_BASE_MS * 2 ** exp) + jitter
+}
+
+function createHolocronThreadId(): string {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    const hex = () => Math.floor(Math.random() * 0xffff).toString(16).padStart(4, '0')
+    return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${hex().slice(1)}-${hex()}${hex()}${hex()}`
+  }
+}
+
+function traskRetrievingAgent(question: string): AgentResult {
+  return {
+    agentName: 'Trask',
+    source: 'holocron',
+    snippet: shortFluxWords(question, 10),
+    confidence: 0,
+    status: 'retrieving',
+  }
+}
+
+function createResearchLoadingMessage(
+  id: string,
+  question: string,
+  timestamp: number,
+  queryType: QueryType = 'general',
+  steps: MessageResearchStep[] = [],
+): MessageType {
+  return {
+    id,
+    role: 'assistant',
+    content: 'Consulting the archives. The answer will appear here when the research completes.',
+    timestamp,
+    isExpanded: false,
+    agentResults: [traskRetrievingAgent(question)],
+    queryType,
+    researchStatus: 'pending',
+    researchSteps: steps,
+  }
+}
+
+function isResearchLoadingMessage(message: MessageType): boolean {
+  return message.role === 'assistant'
+    && Boolean(message.agentResults?.some((agent) => agent.source === 'holocron' && agent.status === 'retrieving'))
+}
+
+function humanPhaseLabel(phaseRaw: string): string {
+  const phase = phaseRaw.trim().toLowerCase()
+  switch (phase) {
+    case 'gather':
+      return 'Gathering'
+    case 'report':
+      return 'Analyzing'
+    case 'sources':
+      return 'Verifying sources'
+    case 'compose':
+      return 'Composing answer'
+    default:
+      return phase ? phase[0]!.toUpperCase() + phase.slice(1) : 'Processing'
+  }
+}
+
+function mapResearchStepsFromRecord(rec: TraskHistoryRecordDto): MessageResearchStep[] {
+  const trace = rec.liveTrace ?? []
+  return trace.map((ev, index) => {
+    const at = Date.parse(ev.at) || Date.parse(rec.createdAt) || Date.now()
+    const detail = (ev.detail ?? '').trim() || `${humanPhaseLabel(ev.phase)} in progress`
+    return {
+      id: `${rec.queryId}:${index}:${ev.phase}:${ev.at}`,
+      at,
+      phase: ev.phase,
+      detail,
+      sources: ev.sources,
+    }
+  })
+}
+
+function localResearchStep(phase: string, detail: string): MessageResearchStep {
+  return {
+    id: `local:${phase}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    at: Date.now(),
+    phase,
+    detail,
+  }
+}
+
+function createAssistantMessageFromTraskRecord(rec: TraskHistoryRecordDto, queryType: QueryType): MessageType | null {
+  if (rec.status !== 'complete' || !rec.answer) return null
+  const researchSteps = mapResearchStepsFromRecord(rec)
+  const mappedSources = (rec.sources ?? []).map((s) => ({
+    name: s.name,
+    url: s.url,
+    confidence: 1,
+  }))
+  return {
+    id: `srv-${rec.queryId}-a`,
+    role: 'assistant',
+    content: rec.answer,
+    expandedContent: rec.answer,
+    sources: mappedSources,
+    timestamp: Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
+    isExpanded: false,
+    agentResults: [
+      {
+        agentName: 'Trask',
+        source: 'holocron',
+        snippet: rec.answer.slice(0, 280),
+        confidence: 1,
+        status: 'complete',
+        retrievedContent: rec.answer,
+      },
+    ],
+    queryType,
+    researchStatus: 'complete',
+    researchSteps,
+  }
+}
 
 const HOL_THREAD_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu
 
@@ -95,6 +258,9 @@ function pulseWordsFromTrace(ev: TraskHistoryLiveEventDto, rec: TraskHistoryReco
 }
 
 function mergeHolocronThreadMessages(local: MessageType[], records: TraskHistoryRecordDto[]): MessageType[] {
+  if (records.length === 0) {
+    return local
+  }
   const serverMsgs = mapTraskHistoryToMessages(records)
   const extraLocals = local.filter((m) => {
     if (m.role !== 'user') return false
@@ -114,39 +280,17 @@ function mapTraskHistoryToMessages(records: TraskHistoryRecordDto[]): MessageTyp
       content: rec.query,
       timestamp: Date.parse(rec.createdAt) || Date.now(),
     })
-    if (rec.status === 'complete' && rec.answer) {
-      const mappedSources = (rec.sources ?? []).map((s) => ({
-        name: s.name,
-        url: s.url,
-        confidence: 1,
-      }))
-      syncedMessages.push({
-        id: `srv-${rec.queryId}-a`,
-        role: 'assistant',
-        content: rec.answer,
-        expandedContent: rec.answer,
-        sources: mappedSources,
-        timestamp: Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
-        isExpanded: false,
-        agentResults: [
-          {
-            agentName: 'Trask',
-            source: 'holocron',
-            snippet: rec.answer.slice(0, 280),
-            confidence: 1,
-            status: 'complete',
-            retrievedContent: rec.answer,
-          },
-        ],
-        queryType: 'general',
-      })
-    } else if (rec.status === 'failed') {
-      syncedMessages.push({
-        id: `srv-${rec.queryId}-e`,
-        role: 'system',
-        content: rec.error ?? 'Research failed.',
-        timestamp: Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
-      })
+    const assistantMessage = createAssistantMessageFromTraskRecord(rec, 'general')
+    if (assistantMessage) {
+      syncedMessages.push(assistantMessage)
+    } else {
+      syncedMessages.push(createResearchLoadingMessage(
+        `srv-${rec.queryId}-pending`,
+        rec.query,
+        Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
+        'general',
+        mapResearchStepsFromRecord(rec),
+      ))
     }
   }
   return syncedMessages
@@ -199,14 +343,15 @@ function scheduleAnswerFluxShards(
 }
 
 function App() {
-  const [conversations, setConversations] = useKV<Conversation[]>('qa-conversations', [])
-  const [activeConversationId, setActiveConversationId] = useKV<string | null>('active-conversation-id', null)
-  const [sourceWeights, setSourceWeights] = useKV<SourceWeight[]>('source-weights', DEFAULT_SOURCE_WEIGHTS)
-  const [traskApiKey, setTraskApiKey] = useKV<string>('qa-trask-web-api-key', '')
+  const [conversations, setConversations] = usePersistentLocalState<Conversation[]>('qa-conversations', [])
+  const [activeConversationId, setActiveConversationId] = usePersistentLocalState<string | null>('active-conversation-id', null)
+  const [sourceWeights, setSourceWeights] = usePersistentLocalState<SourceWeight[]>('source-weights', DEFAULT_SOURCE_WEIGHTS)
+  const [traskApiKey, setTraskApiKey] = usePersistentLocalState<string>('qa-trask-web-api-key', '')
+  const [researchJobs, setResearchJobs] = usePersistentLocalState<HolocronResearchJob[]>(HOLOCRON_RESEARCH_JOBS_KEY, [])
   const [input, setInput] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
   const [activeAgents, setActiveAgents] = useState<AgentResult[]>([])
-  const [currentQueryType, setCurrentQueryType] = useState<'modding' | 'technical' | 'lore' | 'general'>('general')
+  const [currentQueryType, setCurrentQueryType] = useState<QueryType>('general')
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false)
   const [isPromptsOpen, setIsPromptsOpen] = useState(false)
@@ -232,6 +377,7 @@ function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const researchWorkersRef = useRef<Set<string>>(new Set())
 
   const activeConversation = (conversations || []).find(c => c.id === activeConversationId)
   const messages = activeConversation?.messages || []
@@ -481,6 +627,38 @@ function App() {
     setHolocronThreadId(tid)
   }, [legacySparkMode])
 
+  /**
+   * Sync activeConversationId → holocronThreadId & URL to prevent swapping.
+   * When user selects a Holocron conversation in the sidebar, both the thread ID state
+   * and the URL parameter must update together, so polling/routing stays consistent.
+   */
+  useEffect(() => {
+    if (legacySparkMode || !traskUsesSameOriginApi() || !activeConversationId) {
+      return
+    }
+    if (!activeConversationId.startsWith('holocron-')) {
+      return
+    }
+    const threadId = activeConversationId.replace('holocron-', '')
+    if (!isHolocronThreadId(threadId)) {
+      return
+    }
+    // Update local state: trigger polling/remote fetch for this thread
+    if (holocronThreadId !== threadId) {
+      setHolocronThreadId(threadId)
+    }
+    // Update URL: ensure the ?thread parameter matches the active conversation
+    const params = new URLSearchParams(window.location.search)
+    const currentThread = params.get('thread')?.trim()
+    if (currentThread !== threadId) {
+      params.set('thread', threadId)
+      const qs = params.toString()
+      window.history.replaceState({}, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`)
+    }
+  }, [activeConversationId, legacySparkMode]) // Intentionally exclude holocronThreadId to avoid re-triggering
+
+
+
   /** Holocron: create shell + select thread immediately so the composer is never blocked on session/history fetch. */
   useEffect(() => {
     if (legacySparkMode || !traskUsesSameOriginApi() || !holocronThreadId) {
@@ -564,9 +742,7 @@ function App() {
         if (cancelled) return
         syncThreadFromRemote(history, { animateTrace: false })
       } catch {
-        if (!cancelled) {
-          toast.error('Could not load Trask history from the server.')
-        }
+        // Background research jobs keep local state alive and retry when the server returns.
       }
 
       if (!cancelled) {
@@ -676,21 +852,239 @@ function App() {
     )
   }
 
-  const appendQueryFlux = (words: string, zone: HolocronSourceZone = 'core') => {
+  const appendQueryFlux = useCallback((words: string, zone: HolocronSourceZone = 'core') => {
     if (!words) return
     setQueryFlux((current) => [
       ...current.slice(-34),
       { id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, words, zone, createdAt: Date.now() },
     ])
-  }
+  }, [])
 
-  const appendAnswerFlux = (words: string, zone: HolocronSourceZone) => {
+  const appendAnswerFlux = useCallback((words: string, zone: HolocronSourceZone) => {
     if (!words) return
     setAnswerFlux((current) => [
       ...current.slice(-34),
       { id: `a-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, words, zone, createdAt: Date.now() },
     ])
-  }
+  }, [])
+
+  const replaceResearchAssistantMessage = useCallback(
+    (job: HolocronResearchJob, assistantMessage: MessageType) => {
+      setConversations((current) =>
+        (current || []).map((conv) => {
+          if (conv.id !== job.conversationId) return conv
+          const serverPendingId = job.serverQueryId ? `srv-${job.serverQueryId}-pending` : undefined
+          const placeholderIndex = conv.messages.findIndex((msg) =>
+            msg.id === job.assistantMessageId || (serverPendingId ? msg.id === serverPendingId : false)
+          )
+          const normalizedQuestion = job.question.trim().toLowerCase()
+          const matchingLoadingIndex = conv.messages.findIndex((msg, index) => {
+            if (!isResearchLoadingMessage(msg)) return false
+            return conv.messages
+              .slice(0, index)
+              .some((candidate) => candidate.role === 'user' && candidate.content.trim().toLowerCase() === normalizedQuestion)
+          })
+          const replaceIndex = placeholderIndex >= 0 ? placeholderIndex : matchingLoadingIndex
+          const hasServerAnswer = conv.messages.some((msg) => msg.id === assistantMessage.id)
+          const updatedMessages = replaceIndex >= 0
+            ? conv.messages.map((msg, index) => (index === replaceIndex ? assistantMessage : msg))
+            : hasServerAnswer
+              ? conv.messages
+              : [...conv.messages, assistantMessage]
+          const nextMessages = updatedMessages.filter((msg, index) => {
+            if (index === replaceIndex || msg.id === assistantMessage.id) return true
+            if (!isResearchLoadingMessage(msg)) return true
+            return !updatedMessages
+              .slice(0, index)
+              .some((candidate) => candidate.role === 'user' && candidate.content.trim().toLowerCase() === normalizedQuestion)
+          })
+          return {
+            ...conv,
+            messages: nextMessages,
+            updatedAt: Date.now(),
+          }
+        })
+      )
+    },
+    [setConversations],
+  )
+
+  const completeResearchJob = useCallback(
+    (job: HolocronResearchJob, record: TraskHistoryRecordDto) => {
+      const assistantMessage = createAssistantMessageFromTraskRecord(record, job.queryType)
+      if (!assistantMessage || !record.answer) return
+      replaceResearchAssistantMessage(job, assistantMessage)
+      setResearchJobs((current) => normalizeResearchJobs(current).filter((candidate) => candidate.clientId !== job.clientId))
+      if (job.conversationId === activeConversationId) {
+        setActiveAgents(assistantMessage.agentResults ?? [])
+        setCurrentQueryType(job.queryType)
+      }
+      setHolocronAnswerBondTicks((n) => n + 1)
+      const touchedZones = new Set<HolocronSourceZone>()
+      for (const src of record.sources ?? []) {
+        const zone = zoneFromSourceLabel(`${src.name} ${src.url}`)
+        touchedZones.add(zone)
+        setSourceMetrics((current) => ({
+          ...current,
+          [zone]: (current[zone] ?? 0) + 1,
+        }))
+      }
+      if (touchedZones.size === 0) touchedZones.add('core')
+      scheduleAnswerFluxShards(record.answer, Array.from(touchedZones), appendAnswerFlux)
+      setHolocronInteractionCount((n) => n + 1 + touchedZones.size)
+    },
+    [activeConversationId, appendAnswerFlux, replaceResearchAssistantMessage, setResearchJobs],
+  )
+
+  useEffect(() => {
+    if (legacySparkMode) return
+    const activeJob = normalizeResearchJobs(researchJobs).find((job) => job.conversationId === activeConversationId)
+    if (!activeJob) {
+      setActiveAgents((current) => current.some((agent) => agent.status === 'retrieving') ? [] : current)
+      return
+    }
+    setCurrentQueryType(activeJob.queryType)
+    setActiveAgents([traskRetrievingAgent(activeJob.question)])
+  }, [activeConversationId, researchJobs])
+
+  useEffect(() => {
+    if (legacySparkMode) return
+    let cancelled = false
+
+    const patchResearchJob = (
+      job: HolocronResearchJob,
+      patch: Partial<HolocronResearchJob> | ((current: HolocronResearchJob) => Partial<HolocronResearchJob>),
+    ) => {
+      setResearchJobs((current) =>
+        normalizeResearchJobs(current).map((candidate) => {
+          if (candidate.clientId !== job.clientId) return candidate
+          const resolved = typeof patch === 'function' ? patch(candidate) : patch
+          return {
+            ...candidate,
+            ...resolved,
+            updatedAt: Date.now(),
+          }
+        })
+      )
+    }
+
+    const retryLater = (job: HolocronResearchJob, patch?: Partial<HolocronResearchJob>) => {
+      patchResearchJob(job, (current) => {
+        const attemptCount = current.attemptCount + 1
+        return {
+          ...patch,
+          attemptCount,
+          nextAttemptAt: Date.now() + researchRetryDelayMs(attemptCount),
+        }
+      })
+    }
+
+    const pollLater = (job: HolocronResearchJob, patch?: Partial<HolocronResearchJob>) => {
+      patchResearchJob(job, (current) => ({
+        ...patch,
+        nextAttemptAt: Date.now() + 2_500,
+        pollFailures: (patch?.pollFailures ?? current.pollFailures),
+      }))
+    }
+
+    const processJob = async (job: HolocronResearchJob) => {
+      if (cancelled || researchWorkersRef.current.has(job.clientId)) return
+      researchWorkersRef.current.add(job.clientId)
+      try {
+        // Only seed/repair the placeholder once. Replacing it every poll can clobber live trace steps.
+        if (!job.serverQueryId && job.attemptCount === 0) {
+          replaceResearchAssistantMessage(job, createResearchLoadingMessage(
+            job.assistantMessageId,
+            job.question,
+            job.createdAt,
+            job.queryType,
+            [
+              localResearchStep('queued', 'Persisted locally; continuing in the background.'),
+              localResearchStep('dispatch', 'Dispatching query to Trask research backend.'),
+            ],
+          ))
+        }
+        if (job.conversationId === activeConversationId) {
+          setCurrentQueryType(job.queryType)
+          setActiveAgents([traskRetrievingAgent(job.question)])
+        }
+
+        if (job.serverQueryId) {
+          const history = await traskGetThread(job.threadId, traskApiKey || undefined, traskPollIterationSignal())
+          if (cancelled) return
+          syncThreadFromRemote(history, { animateTrace: true })
+          const normalizedQuestion = job.question.trim().toLowerCase()
+          const record = history.find((rec) => rec.queryId === job.serverQueryId)
+            ?? history.find((rec) => rec.query.trim().toLowerCase() === normalizedQuestion)
+          if (record?.status === 'complete') {
+            completeResearchJob(job, record)
+            return
+          }
+          if (record?.status === 'failed') {
+            retryLater(job, {
+              // Keep the same server query id; avoid repeatedly starting fresh runs.
+              state: 'submitted',
+              pollFailures: 0,
+            })
+            return
+          }
+          const pollFailures = record ? 0 : job.pollFailures + 1
+          // Missing record can be eventual-consistency or transient backend lag; do not re-dispatch.
+          if (!record && pollFailures >= 12) {
+            retryLater(job, { state: 'submitted', pollFailures })
+            return
+          }
+          pollLater(job, { state: 'submitted', pollFailures })
+          return
+        }
+
+        const record = await traskAsk(job.question, traskApiKey || undefined, job.threadId)
+        if (cancelled) return
+        if (record.status === 'complete') {
+          completeResearchJob(job, record)
+          return
+        }
+        patchResearchJob(job, {
+          serverQueryId: record.queryId,
+          state: 'submitted',
+          attemptCount: 0,
+          pollFailures: 0,
+          nextAttemptAt: Date.now() + 1_500,
+        })
+      } catch {
+        if (!cancelled) {
+          retryLater(job)
+        }
+      } finally {
+        researchWorkersRef.current.delete(job.clientId)
+      }
+    }
+
+    const runDueJobs = () => {
+      const now = Date.now()
+      const dueJobs = normalizeResearchJobs(researchJobs)
+        .filter((job) => job.nextAttemptAt <= now)
+        .slice(0, 4)
+      for (const job of dueJobs) {
+        void processJob(job)
+      }
+    }
+
+    runDueJobs()
+    const timer = window.setInterval(runDueJobs, 2_500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [
+    activeConversationId,
+    completeResearchJob,
+    replaceResearchAssistantMessage,
+    researchJobs,
+    setResearchJobs,
+    syncThreadFromRemote,
+    traskApiKey,
+  ])
 
   const handleToggleExpand = (id: string) => {
     if (!activeConversationId) return
@@ -740,155 +1134,54 @@ function App() {
         return
       }
 
-      const recentQueries = messages
-        .filter((m) => m.role === 'user')
-        .slice(-5)
-        .map((m) => m.content)
-
-      const isRepeat = checkIfRepeatQuestion(userMessage.content, recentQueries)
-
-      if (isRepeat && messages.length > 2) {
-        const systemMessage: MessageType = {
-          id: `msg-${Date.now()}-sys`,
-          role: 'system',
-          content: 'This seems similar to a recent question. Check above for the answer.',
-          timestamp: Date.now(),
-        }
-        updateConversation(activeConversationId, [...newMessages, systemMessage])
-        setIsProcessing(false)
-        return
-      }
-
       if (!legacySparkMode) {
-        const retrieving: AgentResult[] = [
-          {
-            agentName: 'Trask',
-            source: 'holocron',
-            snippet: '',
-            confidence: 0,
-            status: 'retrieving',
-          },
-        ]
+        const retrieving: AgentResult[] = [traskRetrievingAgent(userMessage.content)]
         setActiveAgents(retrieving)
-
-        try {
-          const record = await traskAsk(
-            userMessage.content,
-            traskApiKey || undefined,
-            !legacySparkMode && traskUsesSameOriginApi() && holocronThreadId ? holocronThreadId : undefined,
-          )
-
-          const finalizeAnswerUi = (rec: TraskHistoryRecordDto): void => {
-            if (rec.status !== 'complete' || !rec.answer) return
-            const doneAgents: AgentResult[] = [
-              {
-                agentName: 'Trask',
-                source: 'holocron',
-                snippet: rec.answer.slice(0, 280),
-                confidence: 1,
-                status: 'complete',
-                retrievedContent: rec.answer,
-              },
-            ]
-            setActiveAgents(doneAgents)
-            setHolocronAnswerBondTicks((n) => n + 1)
-            const touchedZones = new Set<HolocronSourceZone>()
-            for (const src of rec.sources ?? []) {
-              const zone = zoneFromSourceLabel(`${src.name} ${src.url}`)
-              touchedZones.add(zone)
-              setSourceMetrics((current) => ({
-                ...current,
-                [zone]: (current[zone] ?? 0) + 1,
-              }))
-            }
-            if (touchedZones.size === 0) touchedZones.add('core')
-            scheduleAnswerFluxShards(rec.answer, Array.from(touchedZones), appendAnswerFlux)
-            setHolocronInteractionCount((n) => n + 1 + touchedZones.size)
-          }
-
-          if (record.status === 'complete' && record.answer) {
-            finalizeAnswerUi(record)
-            const mappedSources = (record.sources ?? []).map((s) => ({
-              name: s.name,
-              url: s.url,
-              confidence: 1,
-            }))
-            const assistantMessage: MessageType = {
-              id: `srv-${record.queryId}-a`,
-              role: 'assistant',
-              content: record.answer,
-              expandedContent: record.answer,
-              sources: mappedSources,
-              timestamp: Date.parse(record.completedAt ?? record.createdAt) || Date.now(),
-              isExpanded: false,
-              agentResults: [
-                {
-                  agentName: 'Trask',
-                  source: 'holocron',
-                  snippet: record.answer.slice(0, 280),
-                  confidence: 1,
-                  status: 'complete',
-                  retrievedContent: record.answer,
-                },
-              ],
-              queryType: queryType,
-            }
-            updateConversation(activeConversationId, [...newMessages, assistantMessage])
-          } else if (record.status === 'pending' && holocronThreadId) {
-            let terminal: TraskHistoryRecordDto | undefined
-            let completionHandled = false
-            const pollDeadline = Date.now() + 4 * 60 * 1000
-            while (Date.now() < pollDeadline) {
-              let hist: TraskHistoryRecordDto[]
-              try {
-                hist = await traskGetThread(holocronThreadId, traskApiKey || undefined, traskPollIterationSignal())
-              } catch {
-                await new Promise((r) => window.setTimeout(r, 500))
-                continue
-              }
-              syncThreadFromRemote(hist, { animateTrace: true })
-              terminal = hist.find((r) => r.queryId === record.queryId)
-              if (terminal?.status === 'complete' || terminal?.status === 'failed') {
-                if (terminal.status === 'complete' && !completionHandled) {
-                  completionHandled = true
-                  finalizeAnswerUi(terminal)
-                }
-                break
-              }
-              await new Promise((r) => window.setTimeout(r, 420))
-            }
-            if (!terminal || (terminal.status !== 'complete' && terminal.status !== 'failed')) {
-              const msg =
-                'Timed out waiting for Trask research. Is trask-http-server running on port 4010?'
-              toast.error(msg)
-              const stallMessage: MessageType = {
-                id: `msg-${Date.now()}-trask-stall`,
-                role: 'system',
-                content: msg,
-                timestamp: Date.now(),
-              }
-              updateConversation(activeConversationId, [...newMessages, stallMessage])
-            }
-            if (terminal?.status === 'failed') {
-              toast.error(terminal.error ?? 'Trask research failed.')
-            }
-          }
-        } catch (error) {
-          console.error('Trask API error:', error)
-          const msg = traskErrorMessageFromUnknown(error)
-          toast.error(msg)
-          const errMessage: MessageType = {
-            id: `msg-${Date.now()}-trask-err`,
-            role: 'system',
-            content: `Research service error: ${msg}`,
-            timestamp: Date.now(),
-          }
-          updateConversation(activeConversationId, [...newMessages, errMessage])
-          appendAnswerFlux(shortFluxWords(msg, 3), 'core')
-          setHolocronInteractionCount((n) => n + 1)
-        } finally {
-          setActiveAgents([])
+        const clientId = `research-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+        const candidateThreadId = activeConversationId.startsWith('holocron-')
+          ? activeConversationId.replace('holocron-', '')
+          : holocronThreadId
+        const threadId = isHolocronThreadId(candidateThreadId)
+          ? candidateThreadId
+          : createHolocronThreadId()
+        const assistantMessageId = `pending-${clientId}-a`
+        const pendingMessage = createResearchLoadingMessage(
+          assistantMessageId,
+          userMessage.content,
+          Date.now(),
+          queryType,
+          [
+            localResearchStep('queued', 'Queued in local background worker.'),
+            localResearchStep('dispatch', 'Preparing research request.'),
+          ],
+        )
+        const researchJob: HolocronResearchJob = {
+          clientId,
+          conversationId: activeConversationId,
+          threadId,
+          question: userMessage.content,
+          assistantMessageId,
+          queryType,
+          state: 'queued',
+          attemptCount: 0,
+          pollFailures: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          nextAttemptAt: Date.now(),
         }
+        updateConversation(activeConversationId, [...newMessages, pendingMessage])
+        if (holocronThreadId !== threadId && isHolocronThreadId(threadId)) {
+          setHolocronThreadId(threadId)
+        }
+        setResearchJobs((current) => {
+          const jobs = normalizeResearchJobs(current)
+          const alreadyQueued = jobs.some((job) =>
+            job.conversationId === researchJob.conversationId
+            && job.threadId === researchJob.threadId
+            && job.question.trim().toLowerCase() === researchJob.question.trim().toLowerCase()
+          )
+          return alreadyQueued ? jobs : [...jobs, researchJob]
+        })
         return
       }
 

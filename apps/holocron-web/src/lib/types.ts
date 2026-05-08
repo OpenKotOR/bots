@@ -2,6 +2,14 @@ export type MessageRole = 'user' | 'assistant' | 'system'
 
 export type QueryType = 'modding' | 'technical' | 'lore' | 'general'
 
+export interface MessageResearchStep {
+  id: string
+  at: number
+  phase: string
+  detail: string
+  sources?: Array<{ id: string; name: string; url: string }>
+}
+
 export interface Message {
   id: string
   role: MessageRole
@@ -13,6 +21,8 @@ export interface Message {
   agentResults?: AgentResult[]
   isAgentPanelExpanded?: boolean
   queryType?: QueryType
+  researchStatus?: 'pending' | 'complete' | 'failed'
+  researchSteps?: MessageResearchStep[]
 }
 
 export interface Source {

@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/button'
 import { Moon, Sun } from '@phosphor-icons/react'
-import { useKV } from '@github/spark/hooks'
 import { useEffect } from 'react'
+import { usePersistentLocalState } from '@/lib/persistent-local-state'
 
 export type HolocronSessionUi =
   | { status: 'loading' }
@@ -14,7 +14,7 @@ type TopNavProps = {
 }
 
 export function TopNav({ holocronSession, onHolocronLogout }: TopNavProps) {
-  const [theme, setTheme] = useKV<'light' | 'dark'>('theme', 'dark')
+  const [theme, setTheme] = usePersistentLocalState<'light' | 'dark'>('theme', 'dark')
 
   useEffect(() => {
     if (theme === 'dark') {

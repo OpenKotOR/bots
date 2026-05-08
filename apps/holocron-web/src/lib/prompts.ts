@@ -1,4 +1,4 @@
-import { useKV } from '@github/spark/hooks'
+import { usePersistentLocalState } from '@/lib/persistent-local-state'
 
 export interface PromptTemplate {
   id: string
@@ -163,7 +163,7 @@ Return as JSON with format:
 ]
 
 export function usePrompts() {
-  const [prompts, setPrompts] = useKV<PromptTemplate[]>('user-prompts', DEFAULT_PROMPTS)
+  const [prompts, setPrompts] = usePersistentLocalState<PromptTemplate[]>('user-prompts', DEFAULT_PROMPTS)
   
   const updatePrompt = (id: string, newTemplate: string) => {
     setPrompts((current) => 

@@ -78,7 +78,7 @@ FIRECRAWL_API_KEY=         # optional — used by future ingest pipeline
 DATABASE_URL=              # optional — defaults to local file storage
 ```
 
-For Trask's headless GPT Researcher `/ask` flow (and Holocron Q&A), create a Python venv with
+For Trask's headless ai-researchwizard `/ask` flow (and Holocron Q&A), create a Python venv with
 `vendor/ai-researchwizard/requirements.txt` — see **`scripts/bootstrap_trask_gpt_researcher.ps1`** /
 **`scripts/bootstrap_trask_gpt_researcher.sh`** and [docs/trask.md](trask.md) — then set:
 
@@ -330,6 +330,9 @@ bot’s embedded HTTP/WebSocket API, start Postgres + Nakama (`pnpm dev:pazaak-n
 `VITE_NAKAMA_HOST`, etc.). Gameplay talks to Nakama on port **7350** directly from the browser;
 keep the bot on **4001** if you still need OAuth (`/api/auth/token`) or Trask (`/api/trask/*`), and
 set `VITE_LEGACY_HTTP_ORIGIN=http://localhost:4001` so those routes keep working.
+
+To run Nakama on a **cloud VM or container host** (and wire GitHub Pages builds to it), see
+**[nakama-cloud-hosting.md](nakama-cloud-hosting.md)**.
 
 ### 4. Build the Activity for Production
 

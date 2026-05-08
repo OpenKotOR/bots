@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Message as MessageType, AgentResult } from '@/lib/types'
+import { useEffect, useMemo, useState } from 'react'
+import { Message as MessageType, MessageResearchStep } from '@/lib/types'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -25,9 +25,38 @@ function getConfidenceColor(confidence: number): string {
   }
 }
 
+function researchPhaseLabel(phaseRaw: string): string {
+  const phase = phaseRaw.trim().toLowerCase()
+  switch (phase) {
+    case 'queued':
+      return 'Queued'
+    case 'dispatch':
+      return 'Dispatching'
+    case 'stream':
+      return 'Streaming'
+    case 'gather':
+      return 'Gathering'
+    case 'report':
+      return 'Analyzing'
+    case 'sources':
+      return 'Verifying sources'
+    case 'compose':
+      return 'Composing'
+    case 'retry':
+      return 'Retrying'
+    default:
+      return phase ? phase[0]!.toUpperCase() + phase.slice(1) : 'Processing'
+  }
+}
+
+function timelineStepKey(step: MessageResearchStep, idx: number): string {
+  return step.id || `${step.phase}:${step.at}:${idx}`
+}
+
 export function Message({ message, onToggleExpand }: MessageProps) {
   const [isCopied, setIsCopied] = useState(false)
   const [isAgentPanelOpen, setIsAgentPanelOpen] = useState(false)
+  const [isResearchPanelOpen, setIsResearchPanelOpen] = useState(false)
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set())
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
@@ -114,6 +143,18 @@ export function Message({ message, onToggleExpand }: MessageProps) {
     })
   }
 
+  const hasResearchTimeline = !isUser && Boolean(message.researchSteps && message.researchSteps.length > 0)
+  const sortedResearchSteps = useMemo(() => {
+    const steps = message.researchSteps ?? []
+    return [...steps].sort((a, b) => a.at - b.at)
+  }, [message.researchSteps])
+
+  useEffect(() => {
+    if (message.researchStatus === 'pending' && hasResearchTimeline) {
+      setIsResearchPanelOpen(true)
+    }
+  }, [hasResearchTimeline, message.researchStatus])
+
   if (isSystem) {
     return (
       <div 
@@ -127,6 +168,7 @@ export function Message({ message, onToggleExpand }: MessageProps) {
   }
 
   const hasAgentResults = !isUser && message.agentResults && message.agentResults.length > 0
+  const showLegacyAgentPanel = hasAgentResults && !hasResearchTimeline
   const successfulAgents = hasAgentResults ? (message.agentResults || []).filter(a => a.status === 'complete' && a.confidence > 0.65) : []
   const failedAgents = hasAgentResults ? (message.agentResults || []).filter(a => a.status === 'failed' || a.confidence <= 0.65) : []
 
@@ -146,7 +188,83 @@ export function Message({ message, onToggleExpand }: MessageProps) {
             : 'bg-card hover:bg-card/80 transition-colors'
         }`}
       >
-        {hasAgentResults && (
+        {hasResearchTimeline && (
+          <div className="mb-3 pb-3 border-b border-border/50">
+            <Collapsible
+              open={isResearchPanelOpen}
+              onOpenChange={setIsResearchPanelOpen}
+            >
+              <CollapsibleTrigger className="flex items-center justify-between w-full group/trigger hover:bg-muted/50 -mx-2 px-2 py-1.5 rounded transition-colors">
+                <div className="flex items-center gap-2 min-w-0">
+                  {message.researchStatus === 'pending' ? (
+                    <motion.div
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 1.4, repeat: Infinity, ease: 'linear' }}
+                      className="text-primary"
+                    >
+                      <MagnifyingGlass size={14} weight="bold" />
+                    </motion.div>
+                  ) : (
+                    <CheckCircle size={14} weight="fill" className="text-accent" />
+                  )}
+                  <span className="text-xs font-medium text-muted-foreground">
+                    {message.researchStatus === 'pending' ? 'Thinking' : 'Thought process'}
+                  </span>
+                  <Badge variant="secondary" className="h-5 px-1.5 text-[10px]">
+                    {sortedResearchSteps.length} step{sortedResearchSteps.length === 1 ? '' : 's'}
+                  </Badge>
+                </div>
+                {isResearchPanelOpen ? (
+                  <CaretUp size={14} weight="bold" className="text-muted-foreground" />
+                ) : (
+                  <CaretDown size={14} weight="bold" className="text-muted-foreground" />
+                )}
+              </CollapsibleTrigger>
+
+              <CollapsibleContent>
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="mt-2 space-y-2"
+                >
+                  {sortedResearchSteps.map((step, idx) => {
+                    const isLast = idx === sortedResearchSteps.length - 1
+                    return (
+                      <div key={timelineStepKey(step, idx)} className="relative pl-4">
+                        {!isLast && (
+                          <span className="absolute left-[5px] top-4 h-[calc(100%-2px)] w-px bg-border/70" aria-hidden />
+                        )}
+                        <span
+                          className={`absolute left-0 top-1.5 h-2.5 w-2.5 rounded-full ${
+                            isLast && message.researchStatus === 'pending' ? 'bg-primary animate-pulse' : 'bg-accent/80'
+                          }`}
+                          aria-hidden
+                        />
+                        <div className="rounded-md bg-muted/20 px-2.5 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-semibold text-foreground/90 uppercase tracking-wide">
+                              {researchPhaseLabel(step.phase)}
+                            </p>
+                            <span className="text-[10px] text-muted-foreground">{formatTime(step.at)}</span>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{step.detail}</p>
+                          {step.sources && step.sources.length > 0 && (
+                            <p className="text-[10px] text-muted-foreground/80 mt-1">
+                              {step.sources.length} source{step.sources.length === 1 ? '' : 's'} touched
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </motion.div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+        )}
+
+        {showLegacyAgentPanel && (
           <div className="mb-3 pb-3 border-b border-border/50">
             <Collapsible
               open={isAgentPanelOpen}

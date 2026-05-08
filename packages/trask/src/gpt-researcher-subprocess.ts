@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import type { ResearchWizardRuntimeConfig } from "@openkotor/config";
 
-export interface HeadlessGptResearcherResult {
+export interface HeadlessAiResearchWizardResult {
   readonly report: string;
   readonly research_information?: {
     readonly source_urls?: readonly string[] | null;
@@ -13,7 +13,7 @@ export interface HeadlessGptResearcherResult {
 }
 
 /** stdin payload for `vendor/ai-researchwizard/trask_headless_research.py`. */
-export interface HeadlessGptResearcherRequestPayload {
+export interface HeadlessAiResearchWizardRequestPayload {
   readonly query: string;
   readonly custom_prompt?: string;
   readonly source_urls?: readonly string[];
@@ -26,14 +26,19 @@ const spawnHeadless = (
   python: string,
   script: string,
   cwd: string,
-  payload: HeadlessGptResearcherRequestPayload,
+  payload: HeadlessAiResearchWizardRequestPayload,
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; code: number | null }> => {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(python, [script], {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      env: {
+        ...process.env,
+        // Ensure Python subprocess outputs UTF-8 on all platforms (fixes charmap errors on Windows).
+        PYTHONIOENCODING: "utf-8",
+        PYTHONUTF8: "1",
+      },
     });
 
     const chunksOut: Buffer[] = [];
@@ -54,7 +59,7 @@ const spawnHeadless = (
 
       settled = true;
       child.kill("SIGTERM");
-      rejectPromise(new Error(`GPT Researcher headless runner timed out after ${timeoutMs}ms`));
+      rejectPromise(new Error(`ai-researchwizard headless runner timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
     child.on("error", (error) => {
@@ -96,32 +101,33 @@ const spawnHeadless = (
 
 export const runHeadlessGptResearcher = async (
   config: ResearchWizardRuntimeConfig,
-  payload: HeadlessGptResearcherRequestPayload,
-): Promise<HeadlessGptResearcherResult> => {
+  payload: HeadlessAiResearchWizardRequestPayload,
+): Promise<HeadlessAiResearchWizardResult> => {
   const root = config.gptResearcherRoot?.trim();
 
   if (!root) {
     throw new Error(
-      "GPT Researcher root could not be resolved. Clone or vendor ai-researchwizard under <repo>/vendor/ai-researchwizard (with gpt_researcher/), or set TRASK_GPT_RESEARCHER_ROOT.",
+      "ai-researchwizard root could not be resolved. Clone or vendor ai-researchwizard under <repo>/vendor/ai-researchwizard (with gpt_researcher/), or set TRASK_GPT_RESEARCHER_ROOT.",
     );
   }
 
   const script = (config.headlessScriptPath?.trim() || join(root, "trask_headless_research.py")).trim();
 
   if (!existsSync(script)) {
-    throw new Error(`GPT Researcher headless script not found: ${script}`);
+    throw new Error(`ai-researchwizard headless script not found: ${script}`);
   }
 
   const python = config.pythonExecutable?.trim() || "python";
+  const runCwd = process.cwd();
 
-  const { stdout, stderr, code } = await spawnHeadless(python, script, root, payload, config.timeoutMs);
+  const { stdout, stderr, code } = await spawnHeadless(python, script, runCwd, payload, config.timeoutMs);
 
   if (code !== 0) {
-    throw new Error(`GPT Researcher headless runner exited ${code ?? "unknown"}: ${stderr || stdout || "no output"}`);
+    throw new Error(`ai-researchwizard headless runner exited ${code ?? "unknown"}: ${stderr || stdout || "no output"}`);
   }
 
   try {
-    const parsed = JSON.parse(stdout) as HeadlessGptResearcherResult;
+    const parsed = JSON.parse(stdout) as HeadlessAiResearchWizardResult;
 
     if (typeof parsed.report !== "string" || !parsed.report.trim()) {
       throw new Error("Headless runner returned empty report.");
@@ -130,7 +136,7 @@ export const runHeadlessGptResearcher = async (
     return parsed;
   } catch (error) {
     if (error instanceof SyntaxError) {
-      throw new Error(`GPT Researcher headless runner returned invalid JSON: ${stdout.slice(0, 400)}`);
+      throw new Error(`ai-researchwizard headless runner returned invalid JSON: ${stdout.slice(0, 400)}`);
     }
 
     throw error;

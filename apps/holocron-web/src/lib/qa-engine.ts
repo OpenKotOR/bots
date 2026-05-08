@@ -25,24 +25,13 @@ export async function classifyQueryType(query: string): Promise<QueryType> {
 
 export async function detectQuestionRelevance(input: string): Promise<{ isRelevant: boolean; reason: string }> {
   const trimmed = input.trim()
-  
-  if (trimmed.length < 5) {
-    return { isRelevant: false, reason: 'too_short' }
+
+  // Holocron now accepts any non-empty query and lets backend research decide quality.
+  if (trimmed.length === 0) {
+    return { isRelevant: false, reason: 'empty' }
   }
-  
-  const questionWords = ['what', 'how', 'why', 'when', 'where', 'who', 'which', 'can', 'is', 'does', 'are', 'do']
-  const hasQuestionMark = trimmed.includes('?')
-  const startsWithQuestionWord = questionWords.some(word => 
-    trimmed.toLowerCase().startsWith(word + ' ')
-  )
-  
-  const isLikelyQuestion = hasQuestionMark || startsWithQuestionWord
-  
-  if (!isLikelyQuestion) {
-    return { isRelevant: false, reason: 'not_question' }
-  }
-  
-  return { isRelevant: true, reason: 'valid' }
+
+  return { isRelevant: true, reason: 'accepted' }
 }
 
 export async function performMultiAgentRetrieval(

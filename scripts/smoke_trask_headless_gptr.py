@@ -5,7 +5,7 @@ Smoke test for `vendor/ai-researchwizard/trask_headless_research.py`.
 Matches the stdin/stdout contract used by `@openkotor/trask` (`runHeadlessGptResearcher`).
 
 Modes:
-  --dry-run   Verify interpreter, repo paths, dotenv + GPTResearcher import (no network/API).
+    --dry-run   Verify interpreter, repo paths, dotenv + ai-researchwizard import (no network/API).
   (default)   Pipe a minimal JSON payload and require valid JSON stdout with a non-empty report.
 
 Examples (repo root):
@@ -13,7 +13,7 @@ Examples (repo root):
   python scripts/smoke_trask_headless_gptr.py --timeout-ms 180000
 
 Environment:
-  TRASK_GPT_RESEARCHER_PYTHON  Optional Python exe (default: .venv-trask-gptr, then python3/python).
+    TRASK_GPT_RESEARCHER_PYTHON  Optional Python exe (default: .venv-trask-gptr, then python3/python).
 
 Live mode needs API + retriever configuration loaded by the headless script (typically
 `vendor/ai-researchwizard/.env`). See docs/trask.md.
@@ -27,6 +27,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+# Ensure this script's own stdout/stderr streams handle Unicode correctly on Windows,
+# where the default console encoding (cp1252) cannot encode emoji from subprocess output.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
 
 
 def _repo_root() -> Path:
@@ -82,7 +89,7 @@ def _resolve_python(explicit: str | None, repo: Path) -> Path:
 
 
 def _minimal_payload() -> dict[str, object]:
-    """Same structural shape as `HeadlessGptResearcherRequestPayload` / Trask `fetchResearchReport`."""
+    """Same structural shape as `HeadlessAiResearchWizardRequestPayload` / Trask `fetchResearchReport`."""
     return {
         "query": "In one sentence, what is Star Wars: Knights of the Old Republic?",
         "custom_prompt": (
@@ -114,7 +121,7 @@ def _run_dry_run(py: Path, gptr: Path) -> None:
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "").strip()
         hint = (
-            "Dry-run failed: this interpreter cannot import GPT Researcher deps.\n"
+            "Dry-run failed: this interpreter cannot import ai-researchwizard deps.\n"
             "Fix: run scripts/bootstrap_trask_gpt_researcher.ps1 (Windows) or "
             "scripts/bootstrap_trask_gpt_researcher.sh (Unix), or:\n"
             "  pip install -r vendor/ai-researchwizard/requirements.txt\n"
@@ -133,6 +140,7 @@ def _run_dry_run(py: Path, gptr: Path) -> None:
 
 
 def _run_live(py: Path, gptr: Path, script: Path, timeout_ms: int, payload: dict[str, object]) -> None:
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     result = subprocess.run(
         [str(py), str(script)],
         cwd=str(gptr),
@@ -141,6 +149,7 @@ def _run_live(py: Path, gptr: Path, script: Path, timeout_ms: int, payload: dict
         text=True,
         timeout=max(1, timeout_ms) / 1000.0,
         encoding="utf-8",
+        env=env,
     )
 
     err = (result.stderr or "").strip()
@@ -150,7 +159,7 @@ def _run_live(py: Path, gptr: Path, script: Path, timeout_ms: int, payload: dict
         sys.stderr.write(err + ("\n" if err else ""))
         sys.stderr.write(
             "Headless runner exited non-zero. For demos, ensure vendor/ai-researchwizard/.env has "
-            "LLM and retriever keys (e.g. OPENAI_API_KEY and default Tavily retriever key).\n",
+            "LLM and retriever keys (e.g. OPENROUTER_API_KEY; Tavily is optional).\n",
         )
         raise SystemExit(1)
 
@@ -202,7 +211,7 @@ def main() -> None:
     script = _headless_script(gptr)
 
     if not gptr.is_dir():
-        raise SystemExit(f"Missing GPT Researcher tree: {gptr}")
+        raise SystemExit(f"Missing ai-researchwizard tree: {gptr}")
     if not script.is_file():
         raise SystemExit(f"Missing headless script: {script}")
 

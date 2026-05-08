@@ -18,7 +18,7 @@ Purpose: guild-first KOTOR q&a and troubleshooting.
 
 Commands: `/ask`, `/sources`, `/queue-reindex`.
 
-Current implementation: `/ask` runs the vendored **headless GPT Researcher** Python entrypoint
+Current implementation: `/ask` runs the vendored **headless ai-researchwizard** Python entrypoint
 (`trask_headless_research.py`, same library as upstream `cli.py`), pins the request to this repo's
 hardcoded approved source list, and renders the returned report into a Discord-native briefing with
 inline numeric citations plus a compact `Sources` block. `/sources` remains as an admin-facing policy

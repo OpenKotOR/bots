@@ -98,7 +98,7 @@ const uniqueUrlsPreserveOrder = (urls: readonly string[]): string[] => {
   return out;
 };
 
-/** Visited / cited URLs from GPT Researcher payload (Holocron live facet pings). */
+/** Visited / cited URLs from ai-researchwizard payload (Holocron live facet pings). */
 const collectVisitedUrlsFromPayload = (payload: ResearchWizardResponsePayload): string[] => {
   const info = payload.research_information;
   const rawVisited =
@@ -210,6 +210,27 @@ const formatSourcesSection = (sources: readonly SourceDescriptor[]): string => {
   ].join("\n");
 };
 
+const DEFAULT_REWRITE_TIMEOUT_MS = 25_000;
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
+  return await new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`rewrite timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    void promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+};
+
 const fallbackDiscordRewrite = (
   report: string,
   sources: readonly SourceDescriptor[],
@@ -290,6 +311,14 @@ const fallbackDiscordBrief = (report: string, sources: readonly SourceDescriptor
   return `${summary}\n\n${formatSourcesSection(sources)}`;
 };
 
+const degradedAnswerFallback = (query: string, approvedSources: readonly SourceDescriptor[]): string => {
+  const curated = approvedSources.slice(0, 3);
+  const lead =
+    `I could not complete live archive synthesis for this question right now, but here is the fastest next step: ` +
+    `open one of the vetted sources below and search for: "${query.trim()}".`;
+  return `${lead}\n\n${formatSourcesSection(curated)}`;
+};
+
 export class ResearchWizardClient implements ResearchWizardQueryHandler {
   private readonly openAiClient: OpenAI | null;
 
@@ -324,38 +353,41 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
 
     for (const model of modelsToTry) {
       try {
-        const completion = await this.openAiClient.chat.completions.create({
-          model,
-          temperature: 0.2,
-          messages: [
-            {
-              role: "system",
-              content: [
-                "Rewrite research reports into concise Discord answers.",
-                "Do not mention research steps, indexing, tooling, or backend behavior.",
-                "Use only the numbered sources provided by the user.",
-                "Return plain Markdown with no headings except the final Sources heading.",
-              ].join(" "),
-            },
-            {
-              role: "user",
-              content: [
-                `Question: ${query}`,
-                "Write a concise answer for Discord.",
-                "Requirements:",
-                "- Lead with the answer.",
-                "- Use at most 3 short paragraphs or 5 compact bullets before sources.",
-                "- Use inline numeric citations like [1], [2].",
-                ' - End with the exact heading "Sources" on its own line.',
-                "- Under Sources, include only the cited sources using the exact numbered lines provided below.",
-                "Allowed Sources:",
-                allowedSources,
-                "Research Report:",
-                report,
-              ].join("\n\n"),
-            },
-          ],
-        });
+        const completion = await withTimeout(
+          this.openAiClient.chat.completions.create({
+            model,
+            temperature: 0.2,
+            messages: [
+              {
+                role: "system",
+                content: [
+                  "Rewrite research reports into concise Discord answers.",
+                  "Do not mention research steps, indexing, tooling, or backend behavior.",
+                  "Use only the numbered sources provided by the user.",
+                  "Return plain Markdown with no headings except the final Sources heading.",
+                ].join(" "),
+              },
+              {
+                role: "user",
+                content: [
+                  `Question: ${query}`,
+                  "Write a concise answer for Discord.",
+                  "Requirements:",
+                  "- Lead with the answer.",
+                  "- Use at most 3 short paragraphs or 5 compact bullets before sources.",
+                  "- Use inline numeric citations like [1], [2].",
+                  ' - End with the exact heading "Sources" on its own line.',
+                  "- Under Sources, include only the cited sources using the exact numbered lines provided below.",
+                  "Allowed Sources:",
+                  allowedSources,
+                  "Research Report:",
+                  report,
+                ].join("\n\n"),
+              },
+            ],
+          }),
+          DEFAULT_REWRITE_TIMEOUT_MS,
+        );
 
         const rewritten = completion.choices[0]?.message?.content?.trim();
 
@@ -387,34 +419,37 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
 
     for (const model of modelsToTry) {
       try {
-        const completion = await this.openAiClient.chat.completions.create({
-          model,
-          temperature: 0.15,
-          max_tokens: 380,
-          messages: [
-            {
-              role: "system",
-              content: [
-                "Rewrite research into a very short Discord chat reply (like a quick DM).",
-                "No preamble, no essay tone, no meta commentary about research.",
-                "Use only the numbered sources provided.",
-                "Plain sentences; at most 2 short sentences OR up to 3 compact bullets before Sources.",
-                'End with the exact heading "Sources" on its own line, then cited sources only.',
-              ].join(" "),
-            },
-            {
-              role: "user",
-              content: [
-                `Question: ${query}`,
-                "Write the shortest helpful answer.",
-                "Allowed Sources:",
-                allowedSources,
-                "Research Report:",
-                report,
-              ].join("\n\n"),
-            },
-          ],
-        });
+        const completion = await withTimeout(
+          this.openAiClient.chat.completions.create({
+            model,
+            temperature: 0.15,
+            max_tokens: 380,
+            messages: [
+              {
+                role: "system",
+                content: [
+                  "Rewrite research into a very short Discord chat reply (like a quick DM).",
+                  "No preamble, no essay tone, no meta commentary about research.",
+                  "Use only the numbered sources provided.",
+                  "Plain sentences; at most 2 short sentences OR up to 3 compact bullets before Sources.",
+                  'End with the exact heading "Sources" on its own line, then cited sources only.',
+                ].join(" "),
+              },
+              {
+                role: "user",
+                content: [
+                  `Question: ${query}`,
+                  "Write the shortest helpful answer.",
+                  "Allowed Sources:",
+                  allowedSources,
+                  "Research Report:",
+                  report,
+                ].join("\n\n"),
+              },
+            ],
+          }),
+          DEFAULT_REWRITE_TIMEOUT_MS,
+        );
 
         const rewritten = completion.choices[0]?.message?.content?.trim();
 
@@ -433,11 +468,16 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     query: string,
     customPrompt: string,
   ): Promise<{ report: string; payload: ResearchWizardResponsePayload }> {
+    const strictSourceUrlMode = process.env.TRASK_RESEARCH_STRICT_SOURCE_URLS === "1";
+    const strictQueryDomainMode = process.env.TRASK_RESEARCH_STRICT_QUERY_DOMAINS === "1";
     const raw = await runHeadlessGptResearcher(this.config, {
       query: buildResearchTask(query),
       custom_prompt: customPrompt,
-      source_urls: this.approvedSources.map((source) => source.homeUrl),
-      query_domains: this.approvedSources.map((source) => new URL(source.homeUrl).hostname),
+      // Domain constraints keep retrieval bounded while avoiding expensive full-homepage seeding each query.
+      ...(strictSourceUrlMode ? { source_urls: this.approvedSources.map((source) => source.homeUrl) } : {}),
+      ...(strictQueryDomainMode
+        ? { query_domains: this.approvedSources.map((source) => new URL(source.homeUrl).hostname) }
+        : {}),
       report_type: "research_report",
       report_source: "web",
     });
@@ -452,7 +492,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     const report = typeof raw.report === "string" ? normalizeReport(raw.report) : "";
 
     if (!report) {
-      throw new Error("GPT Researcher returned an empty report.");
+      throw new Error("ai-researchwizard returned an empty report.");
     }
 
     return { report, payload };
@@ -462,32 +502,49 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     query: string,
     onProgress?: (event: ResearchWizardProgressEvent) => void,
   ): Promise<ResearchWizardAnswer> {
-    onProgress?.({
-      phase: "gather",
-      detail: "Scanning approved archives and open-web context…",
-    });
-    const { report, payload } = await this.fetchResearchReport(query, buildCustomPrompt());
-    emitArchiveProbeEvents(payload, this.approvedSources, onProgress);
-    onProgress?.({
-      phase: "report",
-      detail: "Ranking passages and citations…",
-    });
-    const relevantSources = collectRelevantSources(report, this.approvedSources, payload);
-    onProgress?.({
-      phase: "sources",
-      detail: relevantSources.length ? `${relevantSources.length} sources matched` : "Mapping hosts to archive catalog…",
-      sources: relevantSources,
-    });
-    onProgress?.({
-      phase: "compose",
-      detail: "Rendering Holocron answer…",
-    });
-    const answer = await this.rewriteForDiscord(query, report, relevantSources);
+    try {
+      onProgress?.({
+        phase: "gather",
+        detail: "Scanning approved archives and open-web context…",
+      });
+      const { report, payload } = await this.fetchResearchReport(query, buildCustomPrompt());
+      emitArchiveProbeEvents(payload, this.approvedSources, onProgress);
+      onProgress?.({
+        phase: "report",
+        detail: "Ranking passages and citations…",
+      });
+      const relevantSources = collectRelevantSources(report, this.approvedSources, payload);
+      onProgress?.({
+        phase: "sources",
+        detail: relevantSources.length ? `${relevantSources.length} sources matched` : "Mapping hosts to archive catalog…",
+        sources: relevantSources,
+      });
+      onProgress?.({
+        phase: "compose",
+        detail: "Rendering Holocron answer…",
+      });
+      const answer = await this.rewriteForDiscord(query, report, relevantSources);
 
-    return {
-      answer,
-      approvedSources: relevantSources,
-    };
+      return {
+        answer,
+        approvedSources: relevantSources,
+      };
+    } catch {
+      const curatedSources = this.approvedSources.slice(0, 3);
+      onProgress?.({
+        phase: "sources",
+        detail: "Live synthesis unavailable; returning vetted quick-path sources…",
+        sources: curatedSources,
+      });
+      onProgress?.({
+        phase: "compose",
+        detail: "Rendering fallback Holocron answer…",
+      });
+      return {
+        answer: degradedAnswerFallback(query, this.approvedSources),
+        approvedSources: curatedSources,
+      };
+    }
   }
 
   /** Shorter rewrite for proactive/channel replies (still source-backed). */

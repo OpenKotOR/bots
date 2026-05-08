@@ -1,8 +1,7 @@
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
-import { HOLOCRON_FRAME_SRCS } from '@/lib/holocron-frames'
 import { fluxTokensFromQuery, holocronMulberry32 } from '@/lib/holocron-live'
 
-const HERO_VIDEO_SRC = '/holocron/holocron-hero-loop.mp4'
+const HOLOCRON_ARTIFACT_SRC = '/holocron/holocron-artifact.png'
 
 export type HolocronActivityMood = 'idle' | 'retrieve' | 'success' | 'warn' | 'hot'
 
@@ -115,9 +114,7 @@ export function HolocronSanctum({
   livePulses = [],
 }: HolocronSanctumProps) {
   const [artifactBroken, setArtifactBroken] = useState(false)
-  const [heroVideoBroken, setHeroVideoBroken] = useState(false)
   const [bondFlash, setBondFlash] = useState(false)
-  const [frameIndex, setFrameIndex] = useState(0)
   const [activityMood, setActivityMood] = useState<HolocronActivityMood>('idle')
   const successGlowUntilRef = useRef(0)
 
@@ -147,28 +144,6 @@ export function HolocronSanctum({
     }, FRAME_INTERVAL_MS_BASE)
     return () => window.clearInterval(id)
   }, [isProcessing, sourceMetrics, totalInteractions])
-
-  const frameStride = isProcessing ? 2 : 1
-  const frameMs = Math.round(
-    FRAME_INTERVAL_MS_BASE * (isProcessing ? 0.62 : 0.92) - (querySignature % 140) * 0.15,
-  )
-
-  useEffect(() => {
-    const n = HOLOCRON_FRAME_SRCS.length
-    if (n <= 0) return
-    setFrameIndex(querySignature % n)
-  }, [querySignature])
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      setFrameIndex((i) => {
-        const n = HOLOCRON_FRAME_SRCS.length
-        if (n <= 0) return 0
-        return (i + frameStride) % n
-      })
-    }, Math.max(240, frameMs))
-    return () => window.clearInterval(id)
-  }, [frameStride, frameMs])
 
   useEffect(() => {
     if (!answerBondTicks) return
@@ -256,25 +231,12 @@ export function HolocronSanctum({
         <div className="holocron-core-shell__halo" />
         {!artifactBroken ? (
           <>
-            {!heroVideoBroken ? (
-              <video
-                className="holocron-core-shell__artifact holocron-core-shell__hero-video"
-                src={HERO_VIDEO_SRC}
-                muted
-                playsInline
-                loop
-                autoPlay
-                aria-hidden
-                onError={() => setHeroVideoBroken(true)}
-              />
-            ) : (
-              <img
-                src={HOLOCRON_FRAME_SRCS[frameIndex] ?? '/holocron/holocron-artifact.png'}
-                alt=""
-                className="holocron-core-shell__artifact holocron-core-shell__artifact--frames"
-                onError={() => setArtifactBroken(true)}
-              />
-            )}
+            <img
+              src={HOLOCRON_ARTIFACT_SRC}
+              alt=""
+              className="holocron-core-shell__artifact holocron-core-shell__artifact--frames"
+              onError={() => setArtifactBroken(true)}
+            />
             <div className="holocron-core-shell__chip-field holocron-core-shell__chip-field--a" aria-hidden />
             <div className="holocron-core-shell__chip-field holocron-core-shell__chip-field--b" aria-hidden />
           </>
