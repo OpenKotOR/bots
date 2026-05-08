@@ -3,37 +3,59 @@
 .SYNOPSIS
   Upload Cloudflare credentials to GitHub Actions secrets and trigger the Worker deploy workflow.
 
-  Reads from environment (never from disk):
-    CLOUDFLARE_API_TOKEN   - API token with Workers Scripts + Durable Objects deploy
-    CLOUDFLARE_ACCOUNT_ID  - Cloudflare account id (32-char hex from dashboard)
+  Credential sources (first match wins; values never echoed):
+    1) Environment variables CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID
+    2) Repo-root .env.cf.local (gitignored) — KEY=value lines, optional quotes
 
   Optional:
-    GITHUB_REPOSITORY      - default OpenKotOR/bots
+    GITHUB_REPOSITORY — default OpenKotOR/community-bots
 #>
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $repo = $env:GITHUB_REPOSITORY
 if ([string]::IsNullOrWhiteSpace($repo)) {
   $repo = "OpenKotOR/community-bots"
 }
 
+$envFile = Join-Path $repoRoot ".env.cf.local"
+if (Test-Path $envFile) {
+  Get-Content $envFile | ForEach-Object {
+    $line = $_.Trim()
+    if ($line -match '^\s*#' -or $line.Length -eq 0) {
+      return
+    }
+    if ($line -match '^(CLOUDFLARE_API_TOKEN|CLOUDFLARE_ACCOUNT_ID)=(.*)$') {
+      $key = $Matches[1]
+      $val = $Matches[2].Trim().Trim('"').Trim("'")
+      if ($key -eq "CLOUDFLARE_API_TOKEN" -and [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
+        $env:CLOUDFLARE_API_TOKEN = $val
+      }
+      if ($key -eq "CLOUDFLARE_ACCOUNT_ID" -and [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_ACCOUNT_ID)) {
+        $env:CLOUDFLARE_ACCOUNT_ID = $val
+      }
+    }
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_API_TOKEN)) {
-  Write-Error "CLOUDFLARE_API_TOKEN is not set in the environment."
+  Write-Error "CLOUDFLARE_API_TOKEN missing. Set env var or add to .env.cf.local (see .env.cf.local.example)."
 }
 if ([string]::IsNullOrWhiteSpace($env:CLOUDFLARE_ACCOUNT_ID)) {
-  Write-Error "CLOUDFLARE_ACCOUNT_ID is not set in the environment."
+  Write-Error "CLOUDFLARE_ACCOUNT_ID missing. Set env var or add to .env.cf.local (see .env.cf.local.example)."
 }
 
 gh auth status *> $null
 if ($LASTEXITCODE -ne 0) {
-  Write-Error "gh is not authenticated. Run: gh auth login"
+  Write-Error "gh is not authenticated."
 }
 
 $env:CLOUDFLARE_API_TOKEN | gh secret set CLOUDFLARE_API_TOKEN --repo $repo
 $env:CLOUDFLARE_ACCOUNT_ID | gh secret set CLOUDFLARE_ACCOUNT_ID --repo $repo
 
 gh workflow run "Deploy Pazaak Matchmaking Worker" --repo $repo
+Start-Sleep -Seconds 4
 $runId = (gh run list --repo $repo --workflow "Deploy Pazaak Matchmaking Worker" --limit 1 --json databaseId -q ".[0].databaseId")
 if ([string]::IsNullOrWhiteSpace($runId)) {
   Write-Error "Could not resolve latest workflow run id."
