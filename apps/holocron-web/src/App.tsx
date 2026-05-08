@@ -34,6 +34,7 @@ import {
   checkIfRepeatQuestion,
   classifyQueryType,
 } from '@/lib/qa-engine'
+import { conversationDisplayTitle } from '@/lib/conversation-utils'
 import {
   traskAsk,
   traskErrorMessageFromUnknown,
@@ -309,9 +310,10 @@ function App() {
         const localBase = [...prependLocals, ...(prev?.messages ?? [])]
         const merged = mergeHolocronThreadMessages(localBase, records)
         const firstUser = merged.find((m) => m.role === 'user')
-        const title =
-          firstUser?.content.substring(0, 50) + (firstUser && firstUser.content.length > 50 ? '...' : '') ||
-          'Trask · Holocron'
+        const raw = firstUser?.content?.trim() ?? ''
+        const title = raw
+          ? raw.substring(0, 50) + (raw.length > 50 ? '...' : '')
+          : 'Trask · Holocron'
         const conv: Conversation = {
           id: convId,
           title,
@@ -660,7 +662,7 @@ function App() {
           const q = firstUserMessage?.content?.trim()
           const title = q
             ? q.substring(0, 50) + (q.length > 50 ? '...' : '')
-            : conv.title?.trim() || 'Holocron thread'
+            : conversationDisplayTitle(conv.title)
           
           return {
             ...conv,

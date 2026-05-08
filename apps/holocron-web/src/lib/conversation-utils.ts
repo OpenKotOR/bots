@@ -1,5 +1,12 @@
 import { Conversation, ConversationFilters, DateFilter } from './types'
 
+/** Safe label for UI when title is missing or corrupted (e.g. legacy stored data). */
+export function conversationDisplayTitle(title: string | undefined | null): string {
+  const t = title?.trim()
+  if (!t || t === 'undefined') return 'Holocron thread'
+  return t
+}
+
 export function extractTopicsFromConversation(conversation: Conversation): string[] {
   const topics = new Set<string>()
   
@@ -89,10 +96,10 @@ export function searchConversations(
   const lowerQuery = query.toLowerCase()
   
   return conversations.filter(conversation => {
-    const titleMatch = conversation.title.toLowerCase().includes(lowerQuery)
-    
-    const messageMatch = conversation.messages.some(msg => 
-      msg.content.toLowerCase().includes(lowerQuery) ||
+    const titleMatch = conversationDisplayTitle(conversation.title).toLowerCase().includes(lowerQuery)
+
+    const messageMatch = conversation.messages.some(msg =>
+      (msg.content ?? '').toLowerCase().includes(lowerQuery) ||
       (msg.expandedContent && msg.expandedContent.toLowerCase().includes(lowerQuery))
     )
     
@@ -152,7 +159,7 @@ export function sortConversations(
       case 'oldest':
         return a.updatedAt - b.updatedAt
       case 'title':
-        return a.title.localeCompare(b.title)
+        return conversationDisplayTitle(a.title).localeCompare(conversationDisplayTitle(b.title))
       default:
         return 0
     }

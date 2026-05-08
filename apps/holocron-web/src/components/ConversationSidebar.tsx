@@ -15,6 +15,7 @@ import {
   sortConversations,
   getAllTopicsFromConversations,
   extractTopicsFromConversation,
+  conversationDisplayTitle,
 } from '@/lib/conversation-utils'
 
 interface ConversationSidebarProps {
@@ -97,7 +98,8 @@ export function ConversationSidebar({
   const handleStartEdit = (conversation: Conversation, e: React.MouseEvent) => {
     e.stopPropagation()
     setEditingId(conversation.id)
-    setEditingTitle(conversation.title)
+    const raw = conversation.title?.trim()
+    setEditingTitle(raw && raw !== 'undefined' ? conversation.title : '')
   }
 
   const handleSaveEdit = () => {
@@ -299,7 +301,7 @@ export function ConversationSidebar({
                               isActive ? 'text-accent' : 'text-foreground'
                             }`}
                           >
-                            {conversation.title?.trim() || 'Holocron thread'}
+                            {conversationDisplayTitle(conversation.title)}
                           </h3>
                         )}
                         <div className="flex items-center justify-between mt-1">
