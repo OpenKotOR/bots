@@ -12,12 +12,14 @@ This repository now supports a no-server baseline deployment pattern:
 - GitHub Pages workflow:
   - `.github/workflows/deploy-pazaakworld.yml`
   - Builds `apps/pazaak-world` and deploys `apps/pazaak-world/dist`.
-  - Pins Vite `BASE` to `/bots/` for `https://openkotor.github.io/bots/`.
-  - Serves the suite operator console at `/bots/` and `/community-bots`, and PazaakWorld at
-    `/bots/pazaakworld`.
-  - Copies `index.html` to `404.html` so direct `/bots/pazaakworld` loads resolve to the SPA.
+  - Pins Vite `BASE` to `/community-bots/` for `https://openkotor.github.io/community-bots/`.
+  - Materializes `discord/` and `pazaakworld/` route folders so `/community-bots/pazaakworld/` and
+    related paths return HTTP 200 for the SPA shell.
   - Resolves optional repository variable `PAZAAK_API_BASES` during the workflow and injects it as
     `VITE_API_BASES` without requiring the variable to exist.
+  - Optional repository variable `VITE_LEGACY_HTTP_ORIGIN` (same as local `.env`): when set, those
+    origins are **prepended** before `VITE_API_BASES` so the embedded bot API stays **first** and
+    the Cloudflare Worker (or other URLs in `PAZAAK_API_BASES`) act as **failover** targets.
 - Cloudflare Worker fallback API:
   - `infra/pazaak-matchmaking-worker/wrangler.toml`
   - `infra/pazaak-matchmaking-worker/src/index.ts`
@@ -28,21 +30,30 @@ This repository now supports a no-server baseline deployment pattern:
   - The relay is intentionally non-authoritative; live Pazaak match actions still
     flow through the embedded Pazaak bot API.
 - Worker deployment workflow:
-  - `.github/workflows/pazaak-matchmaking-worker.yml`
+  - `.github/workflows/pazaak-matchmaking-worker.yml` — **`verify-bundle`** job runs `wrangler deploy --dry-run` on every trigger (no Cloudflare secrets). **`deploy`** runs only when `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets exist.
 
 ## API failover strategy
 
-The frontend API client now supports a comma-separated list of API origins:
+The frontend API client supports a comma-separated list of API origins in `VITE_API_BASES`, plus an
+optional **`VITE_LEGACY_HTTP_ORIGIN`** list that is **merged in front** (deduped by normalized
+origin) so you can keep OAuth/Trask on a long-lived bot URL while still listing Worker URLs in
+`PAZAAK_API_BASES` / `VITE_API_BASES`.
 
-- `VITE_API_BASES="https://primary.workers.dev,https://secondary.workers.dev"`
+Examples:
 
-Behavior:
+- Worker only: `VITE_API_BASES="https://pazaak-matchmaking.<sub>.workers.dev"`
+- Bot first, Worker second: set `VITE_LEGACY_HTTP_ORIGIN=https://bot.example.com` and
+  `VITE_API_BASES="https://pazaak-matchmaking.<sub>.workers.dev"` (or encode both only in
+  `PAZAAK_API_BASES` as `https://bot.example.com,https://…workers.dev` without legacy env).
 
-1. Request goes to the first origin.
-2. On network failure or `5xx`, the client retries the next origin.
-3. If all origins fail, existing offline practice paths remain usable.
+Behavior (`createBrowserApiClient` in `@openkotor/platform`):
 
-If `VITE_API_BASES` is unset, the client defaults to relative `/api`.
+1. Request goes to the first origin in order.
+2. On network failure or HTTP **5xx**, the client retries the next origin.
+3. **4xx** responses are returned to the caller (no silent failover — avoids hopping APIs on auth errors).
+4. If all origins fail, existing offline practice paths remain usable.
+
+If `VITE_API_BASES` is unset and `VITE_LEGACY_HTTP_ORIGIN` is unset, the client defaults to relative `/api`.
 
 Discord Activity token exchange can use a separate origin:
 
@@ -60,7 +71,7 @@ state remains on the authoritative API/WebSocket origin from `VITE_API_BASES`.
 
 ## Operator console
 
-The Pages app also exposes a route-aware operator console on `/bots` and `/community-bots`.
+The Pages app also exposes a route-aware operator console under `/community-bots/` (and related SPA routes).
 It is intentionally non-secret and browser-local:
 
 - API target controls for a primary origin plus fallback origins.
