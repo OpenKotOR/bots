@@ -9,7 +9,7 @@ This repository contains the first implementation pass for a KOTOR-themed Discor
 
 ## Current State
 
-**GitHub Pages hub:** the live static operator console and nested SPAs (PazaakWorld, Trask Holocron UI, HK hub) are served at `https://openkotor.github.io/community-bots/` (project site). The older path `https://openkotor.github.io/bots/…` is not published and returns 404; use `…/community-bots/…` in env vars, OAuth callbacks, and docs.
+**GitHub Pages hub:** the live static operator console and nested SPAs (PazaakWorld, Trask Holocron UI, HK hub) are served at `https://openkotor.github.io/community-bots/` (project site). A stable short bookmark is `https://openkotor.github.io/bots/` (org Pages repo) which forwards readers into the same deploy; use full `https://openkotor.github.io/community-bots/…` URLs in env vars, OAuth callbacks, and API bases.
 
 This is the foundation phase. The monorepo includes:
 
@@ -88,8 +88,8 @@ infra/
 
 ## Bot Web UIs (GitHub Pages)
 
-- **Canonical hub URL:** [https://openkotor.github.io/bots/](https://openkotor.github.io/bots/) — stable bookmark that redirects into this repo’s Pages deploy (same content as [Discord hub](https://openkotor.github.io/community-bots/discord)).
-- **Deploy root:** [https://openkotor.github.io/community-bots/](https://openkotor.github.io/community-bots/) — operator console at `/`, Discord hub at `/discord`, [PazaakWorld](https://openkotor.github.io/community-bots/pazaakworld), [Holocron / qa-webui](https://openkotor.github.io/community-bots/qa-webui/), [HK-86 hub](https://openkotor.github.io/community-bots/hk86/).
+- **Canonical hub URL:** [https://openkotor.github.io/bots/](https://openkotor.github.io/bots/) — stable bookmark that redirects into this repo’s Pages deploy (same content as [Discord hub](https://openkotor.github.io/community-bots/discord/)).
+- **Deploy root:** [https://openkotor.github.io/community-bots/](https://openkotor.github.io/community-bots/) — operator console at `/`, Discord hub at [`/discord/`](https://openkotor.github.io/community-bots/discord/), [PazaakWorld](https://openkotor.github.io/community-bots/pazaakworld/), [Holocron / qa-webui](https://openkotor.github.io/community-bots/qa-webui/), [HK-86 hub](https://openkotor.github.io/community-bots/hk86/). The Pages workflow copies `index.html` into `discord/` and `pazaakworld/` so those routes return HTTP 200 (not only a 404-wrapped SPA shell).
 - The `/bots/` entrypoint is served from the org Pages repo [`OpenKotOR/OpenKotOR.github.io`](https://github.com/OpenKotOR/OpenKotOR.github.io) (`bots/index.html`), because `OpenKotOR/bots` is a redirect alias to this repository and cannot host a separate project site at that path.
 
 ## Getting Started
@@ -104,7 +104,7 @@ infra/
    - `corepack pnpm dev:pazaak`
    - `corepack pnpm dev:ingest`
 
-Trask runs **headless GPT Researcher** from `vendor/ai-researchwizard` (see `TRASK_GPT_RESEARCHER_ROOT` /
+Trask runs **headless ai-researchwizard** from `vendor/ai-researchwizard` (see `TRASK_GPT_RESEARCHER_ROOT` /
 `TRASK_GPT_RESEARCHER_PYTHON`); it does **not** require the FastAPI/Web UI server. The vendored tree lives in
 `vendor/ai-researchwizard` (often as a git submodule).
 
