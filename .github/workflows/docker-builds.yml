@@ -124,7 +124,7 @@ jobs:
 
       - name: Verify image built successfully - ${{ matrix.service }}
         run: |
-          docker images | grep ${{ matrix.image }}:test
+          docker image inspect ${{ matrix.image }}:test >/dev/null
           echo "✓ Docker image built successfully"
 
   build-special:
@@ -159,7 +159,7 @@ jobs:
 
       - name: Verify image and check Nakama modules - ${{ matrix.service }}
         run: |
-          docker images | grep ${{ matrix.image }}:test
+          docker image inspect ${{ matrix.image }}:test >/dev/null
           docker run --rm ${{ matrix.image }}:test ls -lh /app/dist 2>&1 || true
           echo "✓ Nakama module bundle verified"
 
