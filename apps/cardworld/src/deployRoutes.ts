@@ -18,10 +18,10 @@ export function discordHubRoute(): string {
   return b ? `${b}/discord` : "/bots";
 }
 
-/** PazaakWorld / Activity browser route. */
-export function pazaakWorldRoute(): string {
+/** CardWorld / Activity browser route. */
+export function cardWorldRoute(): string {
   const b = viteBasePath();
-  return b ? `${b}/pazaakworld` : "/pazaakworld";
+  return b ? `${b}/cardworld` : "/cardworld";
 }
 
 /** Holocron / Trask QA SPA (nested static export). */
@@ -30,15 +30,26 @@ export function qaWebUiRoute(): string {
   return b ? `${b}/qa-webui/` : "/qa-webui/";
 }
 
-export function pazaakWorldPublicUrl(): string {
+export function cardWorldPublicUrl(): string {
   const b = viteBasePath();
   if (import.meta.env.PROD && b) {
-    return `${GITHUB_PAGES_SITE_ROOT}/pazaakworld`;
+    return `${GITHUB_PAGES_SITE_ROOT}/cardworld`;
   }
   if (typeof window !== "undefined") {
-    return `${window.location.origin}${pazaakWorldRoute()}`;
+    return `${window.location.origin}${cardWorldRoute()}`;
   }
-  return `${GITHUB_PAGES_SITE_ROOT}/pazaakworld`;
+  return `${GITHUB_PAGES_SITE_ROOT}/cardworld`;
+}
+
+/**
+ * Legacy aliases preserved while callers migrate from `pazaakworld` to `cardworld`.
+ */
+export function pazaakWorldRoute(): string {
+  return cardWorldRoute();
+}
+
+export function pazaakWorldPublicUrl(): string {
+  return cardWorldPublicUrl();
 }
 
 export function qaWebUiPublicUrl(): string {

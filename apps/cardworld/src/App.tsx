@@ -80,15 +80,24 @@ import { soundManager } from "./utils/soundManager.ts";
 import { ConnectionStatus } from "./components/ConnectionStatus.tsx";
 import { subscribeToActivityRelay, type ActivityRelayConnectionState, type ActivityRelayMember } from "./activityRelay.ts";
 import type { CardWorldConfig } from "@openkotor/platform";
-import { discordHubRoute, pazaakWorldRoute } from "./deployRoutes.ts";
+import { cardWorldRoute, discordHubRoute } from "./deployRoutes.ts";
 import { isGuestLikeAccessToken, nakamaGuestUsername } from "./nakamaClient.ts";
 
-const STANDALONE_AUTH_TOKEN_KEY = "pazaak-world-standalone-auth-token-v1";
+const STANDALONE_AUTH_TOKEN_KEY = "cardworld-standalone-auth-token-v1";
+const LEGACY_STANDALONE_AUTH_TOKEN_KEY = "pazaak-world-standalone-auth-token-v1";
 const USER_SETTINGS_STORAGE_KEY = "pazaak-user-settings-v1";
-const AUTH_MODE_STORAGE_KEY = "pazaak-world-auth-mode-v1";
-const ONBOARDING_STORAGE_KEY = "pazaak-world-onboarding-v1";
-const LOCAL_GUEST_ID_KEY = "pazaak-world-local-guest-id-v1";
+const AUTH_MODE_STORAGE_KEY = "cardworld-auth-mode-v1";
+const ONBOARDING_STORAGE_KEY = "cardworld-onboarding-v1";
+const LEGACY_ONBOARDING_STORAGE_KEY = "pazaak-world-onboarding-v1";
+const LOCAL_GUEST_ID_KEY = "cardworld-local-guest-id-v1";
+const LEGACY_LOCAL_GUEST_ID_KEY = "pazaak-world-local-guest-id-v1";
 const CHITIN_PROOF_STORAGE_KEY = "cardworld-chitin-proof-v1";
+const LOCAL_DIFFICULTY_STORAGE_KEY = "cardworld-local-difficulty-v1";
+const LEGACY_LOCAL_DIFFICULTY_STORAGE_KEY = "pazaak-world-local-difficulty-v1";
+const LOCAL_OPPONENT_STORAGE_KEY = "cardworld-local-opponent-id-v1";
+const LEGACY_LOCAL_OPPONENT_STORAGE_KEY = "pazaak-world-local-opponent-id-v1";
+const LOCAL_PRACTICE_STATS_STORAGE_KEY = "cardworld-local-practice-stats-v1";
+const LEGACY_LOCAL_PRACTICE_STATS_STORAGE_KEY = "pazaak-world-local-practice-stats-v1";
 
 const DEFAULT_CARDWORLD_CONFIG: CardWorldConfig = {
   botGameType: "pazaak",
@@ -150,7 +159,8 @@ const DEFAULT_ONBOARDING_STATE: OnboardingState = {
 
 const loadOnboardingState = (): OnboardingState => {
   try {
-    const raw = window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    const raw = window.localStorage.getItem(ONBOARDING_STORAGE_KEY)
+      ?? window.localStorage.getItem(LEGACY_ONBOARDING_STORAGE_KEY);
     if (!raw) {
       return DEFAULT_ONBOARDING_STATE;
     }
@@ -195,7 +205,11 @@ const saveUserSettings = (settings: PazaakUserSettings): void => {
 
 const getStoredStandaloneAuthToken = (): string => {
   try {
-    return window.localStorage.getItem(STANDALONE_AUTH_TOKEN_KEY)?.trim() || "";
+    return (
+      window.localStorage.getItem(STANDALONE_AUTH_TOKEN_KEY)
+      ?? window.localStorage.getItem(LEGACY_STANDALONE_AUTH_TOKEN_KEY)
+      ?? ""
+    ).trim();
   } catch {
     return "";
   }
@@ -204,6 +218,7 @@ const getStoredStandaloneAuthToken = (): string => {
 const setStoredStandaloneAuthToken = (token: string): void => {
   try {
     window.localStorage.setItem(STANDALONE_AUTH_TOKEN_KEY, token);
+    window.localStorage.removeItem(LEGACY_STANDALONE_AUTH_TOKEN_KEY);
   } catch {
     // Ignore storage failures (private mode/storage disabled).
   }
@@ -212,6 +227,7 @@ const setStoredStandaloneAuthToken = (token: string): void => {
 const clearStoredStandaloneAuthToken = (): void => {
   try {
     window.localStorage.removeItem(STANDALONE_AUTH_TOKEN_KEY);
+    window.localStorage.removeItem(LEGACY_STANDALONE_AUTH_TOKEN_KEY);
   } catch {
     // Ignore storage failures (private mode/storage disabled).
   }
@@ -219,7 +235,11 @@ const clearStoredStandaloneAuthToken = (): void => {
 
 const getOrCreateLocalGuestId = (): string => {
   try {
-    const existing = window.localStorage.getItem(LOCAL_GUEST_ID_KEY)?.trim();
+    const existing = (
+      window.localStorage.getItem(LOCAL_GUEST_ID_KEY)
+      ?? window.localStorage.getItem(LEGACY_LOCAL_GUEST_ID_KEY)
+      ?? ""
+    ).trim();
     if (existing) {
       return existing;
     }
@@ -229,6 +249,7 @@ const getOrCreateLocalGuestId = (): string => {
       `${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`;
     const created = `guest-${suffix}`;
     window.localStorage.setItem(LOCAL_GUEST_ID_KEY, created);
+    window.localStorage.removeItem(LEGACY_LOCAL_GUEST_ID_KEY);
     return created;
   } catch {
     return `guest-${Math.random().toString(36).slice(2, 12)}${Date.now().toString(36)}`;
@@ -411,15 +432,17 @@ const maybeBootstrapNakama = async (session: ActivitySession): Promise<ActivityS
 
 const normalizePathname = (): string => window.location.pathname.replace(/\/+$/u, "") || "/";
 
-const isPazaakWorldRoute = (): boolean => {
+const isCardWorldRoute = (): boolean => {
   if (isDiscordActivity()) {
     return true;
   }
 
   const pathname = normalizePathname();
-  const primary = pazaakWorldRoute();
+  const primary = cardWorldRoute();
   return pathname === primary
     || pathname.startsWith(`${primary}/`)
+    || pathname === "/cardworld"
+    || pathname.startsWith("/cardworld/")
     || pathname === "/pazaakworld"
     || pathname.startsWith("/pazaakworld/")
     || pathname === "/bots/pazaakworld"
@@ -435,8 +458,8 @@ const isDiscordBotsHubRoute = (): boolean => {
 };
 
 export default function App() {
-  if (isPazaakWorldRoute()) {
-    return <PazaakWorldApp />;
+  if (isCardWorldRoute()) {
+    return <CardWorldApp />;
   }
   if (isDiscordBotsHubRoute()) {
     return <DiscordBotsHub />;
@@ -481,7 +504,7 @@ function getSessionFromAppState(state: AppState): ActivitySession | null {
   }
 }
 
-function PazaakWorldApp() {
+function CardWorldApp() {
   const [state, setState] = useState<AppState>({ stage: "loading" });
   /** Bumped on each standalone auth bootstrap effect run so Strict Mode’s stale async pass cannot overwrite state (avoids spurious auth_error / [object Response]). */
   const standaloneAuthBootSeq = useRef(0);
@@ -506,7 +529,13 @@ function PazaakWorldApp() {
   const [cardWorldConfig, setCardWorldConfig] = useState<CardWorldConfig>(DEFAULT_CARDWORLD_CONFIG);
   const [ownershipProof, setOwnershipProof] = useState<OwnershipProofRecord | null>(loadOwnershipProof);
 
+  const isPazaakModeActive = cardWorldConfig.botGameType === "pazaak";
+
   const isPazaakUnlocked = useMemo(() => {
+    if (!isPazaakModeActive) {
+      return false;
+    }
+
     if (!cardWorldConfig.pazaakRequiresOwnershipProof) {
       return true;
     }
@@ -516,7 +545,9 @@ function PazaakWorldApp() {
     }
 
     return Boolean(ownershipProof);
-  }, [cardWorldConfig.pazaakRequiresOwnershipProof, ownershipProof]);
+  }, [cardWorldConfig.pazaakRequiresOwnershipProof, isPazaakModeActive, ownershipProof]);
+
+  const canPlayPazaak = isPazaakModeActive && isPazaakUnlocked;
 
   const shouldRequireOnboarding = useCallback(() => {
     return !isDiscordActivity() && !onboardingState.completed;
@@ -533,8 +564,13 @@ function PazaakWorldApp() {
       return;
     }
 
+    if (!isDiscordActivity() && cardWorldConfig.defaultPublicGameType === "blackjack") {
+      setState({ stage: "blackjack_game", auth: session });
+      return;
+    }
+
     setState({ stage: "mode_selection", auth: session });
-  }, [shouldRequireOnboarding]);
+  }, [cardWorldConfig.defaultPublicGameType, shouldRequireOnboarding]);
 
   const handleSettingsSave = useCallback(async (settings: PazaakUserSettings) => {
     setUserSettings(settings);
@@ -620,7 +656,7 @@ function PazaakWorldApp() {
 
   useEffect(() => {
     if (activityRelayState === "connected" && activityRelayMembers.length > 0) {
-      console.debug("PazaakWorld Activity relay presence", activityRelayMembers);
+      console.debug("CardWorld Activity relay presence", activityRelayMembers);
     }
   }, [activityRelayMembers, activityRelayState]);
 
@@ -818,19 +854,20 @@ function PazaakWorldApp() {
   // Update browser tab title based on current stage.
   useEffect(() => {
     const stageTitles: Partial<Record<AppState["stage"], string>> = {
-      loading: "PazaakWorld — Loading",
-      auth_error: "PazaakWorld — Error",
-      onboarding: "PazaakWorld - Onboarding",
-      mode_selection: "PazaakWorld — Choose Mode",
-      matchmaking: "PazaakWorld — Finding Match…",
-      lobby: "PazaakWorld — Lobby",
-      local_game: "PazaakWorld — Practice",
-      blackjack_game: "PazaakWorld — Blackjack Practice",
-      workshop: "PazaakWorld — Sideboard Workshop",
-      game: "PazaakWorld — Match",
-      trask: "PazaakWorld — Ask Trask",
+      loading: "CardWorld — Loading",
+      auth_error: "CardWorld — Error",
+      onboarding: "CardWorld - Onboarding",
+      mode_selection: "CardWorld — Choose Mode",
+      matchmaking: "CardWorld — Finding Match…",
+      lobby: "CardWorld — Lobby",
+      local_game: "CardWorld — Practice",
+      blackjack_game: "CardWorld — Blackjack Practice",
+      workshop: "CardWorld — Sideboard Workshop",
+      game: "CardWorld — Match",
+      trask: "CardWorld — Ask Trask",
+      tournament: "CardWorld — Tournament Hub",
     };
-    document.title = stageTitles[state.stage] ?? "PazaakWorld";
+    document.title = stageTitles[state.stage] ?? "CardWorld";
   }, [state.stage]);
 
   // On mount: run Discord SDK auth, then poll for an active match.
@@ -1034,11 +1071,12 @@ function PazaakWorldApp() {
       <ModeSelectionScreen
         socketState={matchSocketState}
         isPazaakUnlocked={isPazaakUnlocked}
-        onOpenLobbies={() => setState(isPazaakUnlocked ? { stage: "lobby", auth: state.auth } : { stage: "blackjack_game", auth: state.auth })}
-        onQuickMatch={(preferredMaxPlayers) => setState(isPazaakUnlocked
+        isPazaakModeActive={isPazaakModeActive}
+        onOpenLobbies={() => setState(canPlayPazaak ? { stage: "lobby", auth: state.auth } : { stage: "blackjack_game", auth: state.auth })}
+        onQuickMatch={(preferredMaxPlayers) => setState(canPlayPazaak
           ? { stage: "matchmaking", auth: state.auth, preferredMaxPlayers }
           : { stage: "blackjack_game", auth: state.auth })}
-        onStartLocalGame={(difficulty, opponentId) => setState(isPazaakUnlocked
+        onStartLocalGame={(difficulty, opponentId) => setState(canPlayPazaak
           ? {
               stage: "local_game",
               auth: state.auth,
@@ -1046,6 +1084,7 @@ function PazaakWorldApp() {
               ...(opponentId ? { opponentId } : {}),
             }
           : { stage: "blackjack_game", auth: state.auth })}
+        onStartBlackjackGame={() => setState({ stage: "blackjack_game", auth: state.auth })}
         onOpenTrask={() => setState({ stage: "trask", auth: state.auth })}
         onOpenTournaments={() => setState({ stage: "tournament", auth: state.auth, tournamentId: null })}
         traskAvailable={traskAvailable}
@@ -1074,7 +1113,7 @@ function PazaakWorldApp() {
         onOpenWorkshop={() => setState({ stage: "workshop", auth: state.auth, returnTo: "lobby" })}
         onEnterMatch={(match) => setState({ stage: "game", auth: state.auth, match })}
         onStartLocalGame={(difficulty, opponentId) => setState({
-          ...(isPazaakUnlocked
+          ...(canPlayPazaak
             ? {
                 stage: "local_game" as const,
                 auth: state.auth,
@@ -1226,7 +1265,7 @@ function OnboardingScreen({
           <p className="pazaak-onboarding__step">Step {step} / {maxStep}</p>
           {step === 1 ? (
             <>
-              <h1>Welcome to PazaakWorld, {username}</h1>
+              <h1>Welcome to CardWorld, {username}</h1>
               <p>We will set up your match hub in under a minute.</p>
             </>
           ) : null}
@@ -1303,7 +1342,9 @@ function ModeSelectionScreen({
   onOpenLobbies,
   onQuickMatch,
   onStartLocalGame,
+  onStartBlackjackGame,
   isPazaakUnlocked,
+  isPazaakModeActive,
   onOpenTrask,
   onOpenTournaments,
   traskAvailable = false,
@@ -1313,7 +1354,9 @@ function ModeSelectionScreen({
   onOpenLobbies: () => void;
   onQuickMatch: (preferredMaxPlayers: number) => void;
   onStartLocalGame: (difficulty: AdvisorDifficulty, opponentId?: string) => void;
+  onStartBlackjackGame: () => void;
   isPazaakUnlocked: boolean;
+  isPazaakModeActive: boolean;
   onOpenTrask: () => void;
   onOpenTournaments: () => void;
   traskAvailable?: boolean;
@@ -1322,9 +1365,11 @@ function ModeSelectionScreen({
   const [showRulebook, setShowRulebook] = useState(false);
   const [localDifficulty, setLocalDifficulty] = useState<AdvisorDifficulty>(() => {
     try {
-      const stored = window.localStorage.getItem("pazaak-world-local-difficulty-v1");
-      if (stored === "easy" || stored === "hard" || stored === "professional") {
-        return stored;
+      const stored = window.localStorage.getItem(LOCAL_DIFFICULTY_STORAGE_KEY);
+      const legacy = window.localStorage.getItem(LEGACY_LOCAL_DIFFICULTY_STORAGE_KEY);
+      const next = stored ?? legacy;
+      if (next === "easy" || next === "hard" || next === "professional") {
+        return next;
       }
     } catch {
       // Ignore storage read failures.
@@ -1333,9 +1378,11 @@ function ModeSelectionScreen({
   });
   const [localOpponentId, setLocalOpponentId] = useState<string>(() => {
     try {
-      const stored = window.localStorage.getItem("pazaak-world-local-opponent-id-v1");
-      if (stored && localOpponents.some((opponent) => opponent.id === stored)) {
-        return stored;
+      const stored = window.localStorage.getItem(LOCAL_OPPONENT_STORAGE_KEY);
+      const legacy = window.localStorage.getItem(LEGACY_LOCAL_OPPONENT_STORAGE_KEY);
+      const next = stored ?? legacy;
+      if (next && localOpponents.some((opponent) => opponent.id === next)) {
+        return next;
       }
     } catch {
       // Ignore storage read failures.
@@ -1350,7 +1397,8 @@ function ModeSelectionScreen({
   // Read per-opponent local practice stats from localStorage (written by LocalPracticeGame).
   const localPracticeStats = useMemo<Record<string, { played: number; won: number; lost: number }>>(() => {
     try {
-      const raw = window.localStorage.getItem("pazaak-world-local-practice-stats-v1");
+      const raw = window.localStorage.getItem(LOCAL_PRACTICE_STATS_STORAGE_KEY)
+        ?? window.localStorage.getItem(LEGACY_LOCAL_PRACTICE_STATS_STORAGE_KEY);
       if (!raw) return {};
       const parsed = JSON.parse(raw) as { byOpponent?: Record<string, { played: number; won: number; lost: number }> };
       return parsed?.byOpponent ?? {};
@@ -1381,7 +1429,7 @@ function ModeSelectionScreen({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem("pazaak-world-local-difficulty-v1", localDifficulty);
+      window.localStorage.setItem(LOCAL_DIFFICULTY_STORAGE_KEY, localDifficulty);
     } catch {
       // Ignore storage write failures.
     }
@@ -1389,7 +1437,7 @@ function ModeSelectionScreen({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem("pazaak-world-local-opponent-id-v1", selectedLocalOpponentId);
+      window.localStorage.setItem(LOCAL_OPPONENT_STORAGE_KEY, selectedLocalOpponentId);
     } catch {
       // Ignore storage write failures.
     }
@@ -1479,6 +1527,19 @@ function ModeSelectionScreen({
           </p>
         ) : null}
 
+        <section className="pazaak-world-mode-grid" style={{ marginTop: 12 }}>
+          <article className="pazaak-world-card pazaak-world-card--ai">
+            <h2><span aria-hidden="true">♠</span>Blackjack Practice</h2>
+            <p>Always available in CardWorld. Play instantly while Pazaak online access is locked or queued.</p>
+            <div className="pazaak-world-card__actions">
+              <button className="pazaak-world-button pazaak-world-button--galaxy" onClick={onStartBlackjackGame}>
+                <span aria-hidden="true">♣</span>
+                Start Blackjack
+              </button>
+            </div>
+          </article>
+        </section>
+
         <section className="pazaak-world-mode-grid">
           {aiCard ? (
             <article className="pazaak-world-card pazaak-world-card--ai">
@@ -1522,42 +1583,46 @@ function ModeSelectionScreen({
           ) : null}
 
           {quickMatchCard ? (
-            <article className={`pazaak-world-card pazaak-world-card--online ${isOnline ? "" : "pazaak-world-card--disabled"}`}>
+            <article className={`pazaak-world-card pazaak-world-card--online ${isOnline && isPazaakModeActive ? "" : "pazaak-world-card--disabled"}`}>
               <h2>
                 <span aria-hidden="true">{menuIcon(quickMatchCard.icon)}</span>
                 {quickMatchCard.title}
                 {!isOnline ? <small>Offline</small> : null}
+                {isOnline && !isPazaakModeActive ? <small>Pazaak Disabled</small> : null}
               </h2>
               <p>{quickMatchCard.description}</p>
               <div className="pazaak-world-card__actions">
-                <button className="pazaak-world-button pazaak-world-button--galaxy" onClick={() => onQuickMatch(quickQueuePlayers)} disabled={!isOnline || !isPazaakUnlocked}>
+                <button className="pazaak-world-button pazaak-world-button--galaxy" onClick={() => onQuickMatch(quickQueuePlayers)} disabled={!isOnline || !isPazaakModeActive || !isPazaakUnlocked}>
                   <span aria-hidden="true">{menuIcon(quickMatchCard.primaryAction?.icon ?? "search")}</span>
                   {quickMatchCard.primaryAction?.label ?? "Find Match"}
                 </button>
                 {!isOnline ? <p className="pazaak-world-card__notice">{quickMatchCard.offlineNotice}</p> : null}
+                {isOnline && !isPazaakModeActive ? <p className="pazaak-world-card__notice">Online Pazaak is disabled by server config.</p> : null}
                 {isOnline && !isPazaakUnlocked ? <p className="pazaak-world-card__notice">Pazaak queue unlock requires chitin.key.</p> : null}
               </div>
             </article>
           ) : null}
 
           {lobbyCard ? (
-            <article className={`pazaak-world-card pazaak-world-card--lobby ${isOnline ? "" : "pazaak-world-card--disabled"}`}>
+            <article className={`pazaak-world-card pazaak-world-card--lobby ${isOnline && isPazaakModeActive ? "" : "pazaak-world-card--disabled"}`}>
               <h2>
                 <span aria-hidden="true">{menuIcon(lobbyCard.icon)}</span>
                 {lobbyCard.title}
                 {!isOnline ? <small>Offline</small> : null}
+                {isOnline && !isPazaakModeActive ? <small>Pazaak Disabled</small> : null}
               </h2>
               <p>{lobbyCard.description}</p>
               <div className="pazaak-world-card__actions">
-                <button className="pazaak-world-button pazaak-world-button--hyperspace" onClick={onOpenLobbies} disabled={!isOnline || !isPazaakUnlocked}>
+                <button className="pazaak-world-button pazaak-world-button--hyperspace" onClick={onOpenLobbies} disabled={!isOnline || !isPazaakModeActive || !isPazaakUnlocked}>
                   <span aria-hidden="true">{menuIcon(lobbyCard.primaryAction?.icon ?? "plus")}</span>
                   {lobbyCard.primaryAction?.label ?? "Create Lobby"}
                 </button>
-                <button className="pazaak-world-button pazaak-world-button--outline" onClick={onOpenLobbies} disabled={!isOnline || !isPazaakUnlocked}>
+                <button className="pazaak-world-button pazaak-world-button--outline" onClick={onOpenLobbies} disabled={!isOnline || !isPazaakModeActive || !isPazaakUnlocked}>
                   <span aria-hidden="true">{menuIcon(lobbyCard.secondaryAction?.icon ?? "signin")}</span>
                   {lobbyCard.secondaryAction?.label ?? "Join Lobby"}
                 </button>
                 {!isOnline ? <p className="pazaak-world-card__notice">{lobbyCard.offlineNotice}</p> : null}
+                {isOnline && !isPazaakModeActive ? <p className="pazaak-world-card__notice">Online Pazaak is disabled by server config.</p> : null}
                 {isOnline && !isPazaakUnlocked ? <p className="pazaak-world-card__notice">Lobby access unlock requires chitin.key.</p> : null}
               </div>
             </article>
@@ -1568,7 +1633,7 @@ function ModeSelectionScreen({
           <div className="pazaak-world-opponents__header">
             <div>
               <h2 id="pazaak-opponent-catalogue-title"><span aria-hidden="true">{menuIcon("user")}</span>Opponent Catalogue</h2>
-              <p>{availableOpponents.length} merged profiles from Community Opponents, PazaakWorld, and Activity practice.</p>
+              <p>{availableOpponents.length} merged profiles from Community Opponents, CardWorld, and Activity practice.</p>
               <p className="pazaak-world-opponents__hint">Double-click any opponent card to challenge instantly.</p>
             </div>
             <button className="pazaak-world-button pazaak-world-button--galaxy" onClick={() => onStartLocalGame(selectedOpponent.difficulty, selectedOpponent.id)}>
@@ -2354,8 +2419,8 @@ function AuthDialog({
         <div className="pazaak-world-auth-card__header">
           <div>
             <p>Account</p>
-            <h2 id="pazaak-auth-title">Sign in to PazaakWorld</h2>
-            <p id="pazaak-auth-subtitle" className="pazaak-world-auth-subtitle">Choose a provider, or sign in with your PazaakWorld account.</p>
+            <h2 id="pazaak-auth-title">Sign in to CardWorld</h2>
+            <p id="pazaak-auth-subtitle" className="pazaak-world-auth-subtitle">Choose a provider, or sign in with your CardWorld account.</p>
           </div>
           <button className="pazaak-world-icon-btn pazaak-world-auth-card__close" onClick={onClose} disabled={busy} aria-label="Close account dialog">×</button>
         </div>
@@ -2405,7 +2470,7 @@ function AuthDialog({
                 event.preventDefault();
                 void submit();
               }}>
-                <div className="auth-form__section-title">{mode === "login" ? "Use your PazaakWorld account" : "Create your PazaakWorld account"}</div>
+                <div className="auth-form__section-title">{mode === "login" ? "Use your CardWorld account" : "Create your CardWorld account"}</div>
                 {mode === "login" ? (
                   <>
                     <label className="auth-field">

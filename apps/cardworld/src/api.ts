@@ -133,7 +133,11 @@ const isStaticPagesApiBase = (rawBase: string): boolean => {
   }
   try {
     const url = new URL(rawBase);
-    return url.hostname === "openkotor.github.io" && url.pathname.startsWith("/community-bots/pazaakworld");
+    return url.hostname === "openkotor.github.io"
+      && (
+        url.pathname.startsWith("/community-bots/cardworld")
+        || url.pathname.startsWith("/community-bots/pazaakworld")
+      );
   } catch {
     return false;
   }
