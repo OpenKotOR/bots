@@ -101,22 +101,32 @@ jobs:
         run: pnpm --dir infra/trask-worker run build
 
       - name: Set worker secret TRASK_RESEARCHWIZARD_API_KEY (optional)
-        if: steps.cf_check.outputs.configured == 'true' && secrets.TRASK_RESEARCHWIZARD_API_KEY != ''
+        if: steps.cf_check.outputs.configured == 'true'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TRASK_RESEARCHWIZARD_API_KEY: ${{ secrets.TRASK_RESEARCHWIZARD_API_KEY }}
-        run: echo -n "$TRASK_RESEARCHWIZARD_API_KEY" | pnpm dlx wrangler@4.87.0 secret put TRASK_RESEARCHWIZARD_API_KEY --config infra/trask-worker/wrangler.toml
+        run: |
+          if [ -n "$TRASK_RESEARCHWIZARD_API_KEY" ]; then
+            echo -n "$TRASK_RESEARCHWIZARD_API_KEY" | pnpm dlx wrangler@4.87.0 secret put TRASK_RESEARCHWIZARD_API_KEY --config infra/trask-worker/wrangler.toml
+          else
+            echo "Skipping TRASK_RESEARCHWIZARD_API_KEY sync (secret not set)."
+          fi
 
       - name: Set worker secret TRASK_WEB_API_KEY (optional)
-        if: steps.cf_check.outputs.configured == 'true' && secrets.TRASK_WEB_API_KEY != ''
+        if: steps.cf_check.outputs.configured == 'true'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           TRASK_WEB_API_KEY: ${{ secrets.TRASK_WEB_API_KEY }}
-        run: echo -n "$TRASK_WEB_API_KEY" | pnpm dlx wrangler@4.87.0 secret put TRASK_WEB_API_KEY --config infra/trask-worker/wrangler.toml
+        run: |
+          if [ -n "$TRASK_WEB_API_KEY" ]; then
+            echo -n "$TRASK_WEB_API_KEY" | pnpm dlx wrangler@4.87.0 secret put TRASK_WEB_API_KEY --config infra/trask-worker/wrangler.toml
+          else
+            echo "Skipping TRASK_WEB_API_KEY sync (secret not set)."
+          fi
 
       - name: Deploy Trask worker to workers.dev (free)
         if: steps.cf_check.outputs.configured == 'true'

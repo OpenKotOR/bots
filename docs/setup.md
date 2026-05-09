@@ -306,6 +306,14 @@ This prints:
 - Whether callback URLs match localhost defaults
 - Live provider enablement from `http://localhost:4001/api/auth/oauth/providers`
 
+Deployment guardrails:
+
+- Keep provider **client secrets/write keys on the API server only** (`.env`, runtime secrets, or CI secrets).
+- Do **not** place secrets in `VITE_*` variables (those are shipped to every browser).
+- Worker deployments now accept both naming schemes for OAuth provider secrets:
+  - `PAZAAK_OAUTH_*` (preferred)
+  - legacy `GOOGLE_*` / `DISCORD_*` / `GITHUB_*` fallbacks
+
 When no active match is running, the Activity doubles as a sideboard-management surface. The same
 workshop is also reachable from the in-match Activity header, so the embedded API needs the same
 bot process that owns `custom-sideboards.json`, because the Activity can list, save, activate,
