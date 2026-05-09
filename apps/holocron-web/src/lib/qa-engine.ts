@@ -1,15 +1,15 @@
 import { AgentResult, Source, SourceWeight, ScrapedContent, QueryType } from './types'
-import { scrapeDeadlyStream, scrapeLucasForums, searchGitHub, calculateRelevanceScore } from './scraper'
+import { scrapeDeadlyStream, scrapeLucasForums, scrapeKotorNeocities, scrapePCGamingWiki, searchGitHub, calculateRelevanceScore } from './scraper'
 import { PromptTemplate } from './prompts'
 
 export async function classifyQueryType(query: string): Promise<QueryType> {
   const lowerQuery = query.toLowerCase()
-  
+
   const modPatterns = ['mod', 'install', 'patch', 'tslrcm', 'download', 'compatibility', 'texture', 'override']
   const lorePatterns = ['story', 'lore', 'character', 'plot', 'revan', 'sith', 'jedi', 'planet', 'who is', 'what happened']
   const technicalPatterns = ['error', 'crash', 'bug', 'fix', 'issue', 'problem', 'not working', 'help', 'troubleshoot']
   const generalPatterns = ['what is', 'how to', 'best', 'recommend', 'guide', 'tutorial', 'where']
-  
+
   if (modPatterns.some(pattern => lowerQuery.includes(pattern))) {
     return 'modding'
   } else if (technicalPatterns.some(pattern => lowerQuery.includes(pattern))) {
@@ -19,7 +19,7 @@ export async function classifyQueryType(query: string): Promise<QueryType> {
   } else if (generalPatterns.some(pattern => lowerQuery.includes(pattern))) {
     return 'general'
   }
-  
+
   return 'general'
 }
 
@@ -35,12 +35,12 @@ export async function detectQuestionRelevance(input: string): Promise<{ isReleva
 }
 
 export async function performMultiAgentRetrieval(
-  query: string, 
+  query: string,
   sourceWeights: SourceWeight[],
   prompts?: PromptTemplate[]
 ): Promise<AgentResult[]> {
   const enabledSources = sourceWeights.filter(s => s.enabled)
-  
+
   const agents: AgentResult[] = enabledSources.map(source => ({
     agentName: source.name,
     source: source.url,
@@ -49,15 +49,18 @@ export async function performMultiAgentRetrieval(
     status: 'retrieving' as const,
     retrievedContent: ''
   }))
-  
+
   const getPrompt = (id: string) => prompts?.find(p => p.id === id)?.template
-  
+
   const scraperMap: Record<string, (query: string, template?: string) => Promise<ScrapedContent[]>> = {
     'Deadly Stream': (q, t) => scrapeDeadlyStream(q, t || getPrompt('deadly-stream-search')),
     'Lucas Forums Archive': (q, t) => scrapeLucasForums(q, t || getPrompt('lucas-forums-search')),
-    'GitHub Repository': (q, t) => searchGitHub(q, t || getPrompt('github-search'))
+    'GitHub Repository': (q, t) => searchGitHub(q, t || getPrompt('github-search')),
+    'GitHub KOTOR Projects': (q, t) => searchGitHub(q, t || getPrompt('github-search')),
+    'KOTOR Neocities': (q) => scrapeKotorNeocities(q),
+    'PCGamingWiki': (q) => scrapePCGamingWiki(q),
   }
-  
+
   const retrievalPromises = enabledSources.map(async (source) => {
     try {
       const scraper = scraperMap[source.name]
@@ -71,9 +74,9 @@ export async function performMultiAgentRetrieval(
           retrievedContent: ''
         }
       }
-      
+
       const results = await scraper(query, undefined)
-      
+
       if (results.length === 0) {
         return {
           agentName: source.name,
@@ -84,11 +87,11 @@ export async function performMultiAgentRetrieval(
           retrievedContent: ''
         }
       }
-      
+
       const bestResult = results
         .map(r => ({ ...r, score: calculateRelevanceScore(r, query) * source.weight }))
         .sort((a, b) => b.score - a.score)[0]
-      
+
       return {
         agentName: source.name,
         source: bestResult.url,
@@ -109,12 +112,12 @@ export async function performMultiAgentRetrieval(
       }
     }
   })
-  
+
   return await Promise.all(retrievalPromises)
 }
 
 export async function aggregateAnswer(
-  query: string, 
+  query: string,
   agentResults: AgentResult[],
   prompts?: PromptTemplate[]
 ): Promise<{
@@ -123,7 +126,7 @@ export async function aggregateAnswer(
   sources: Source[]
 }> {
   const successfulResults = agentResults.filter(r => r.status === 'complete' && r.confidence > 0.65)
-  
+
   if (successfulResults.length === 0) {
     return {
       concise: "I couldn't find reliable information on this topic.",
@@ -131,7 +134,7 @@ export async function aggregateAnswer(
       sources: []
     }
   }
-  
+
   const conciseTemplate = prompts?.find(p => p.id === 'concise-answer')?.template || `You are a minimal Q&A assistant. Respond in exactly 1-2 sentences max.
 
 User question: {query}
@@ -148,7 +151,7 @@ Provide a concise answer (1-2 sentences only). Be direct and specific.`
 
   const prompt = window.spark.llmPrompt`${concisePromptText}`
   const concise = await window.spark.llm(prompt, 'gpt-4o-mini')
-  
+
   const expandedTemplate = prompts?.find(p => p.id === 'expanded-answer')?.template || `You are a Q&A assistant. Provide a slightly more detailed explanation (3-4 sentences) for:
 
 User question: {query}
@@ -163,19 +166,19 @@ Add context and details while remaining concise.`
 
   const expandedPrompt = window.spark.llmPrompt`${expandedPromptText}`
   const expanded = await window.spark.llm(expandedPrompt, 'gpt-4o-mini')
-  
+
   const sources: Source[] = successfulResults.map(result => ({
     name: result.agentName,
     url: result.source,
     confidence: result.confidence
   }))
-  
+
   return { concise, expanded, sources }
 }
 
 export function checkIfRepeatQuestion(query: string, recentQueries: string[]): boolean {
   const normalized = query.toLowerCase().trim()
-  
+
   return recentQueries.some(recent => {
     const recentNormalized = recent.toLowerCase().trim()
     const similarity = calculateSimilarity(normalized, recentNormalized)
@@ -186,9 +189,9 @@ export function checkIfRepeatQuestion(query: string, recentQueries: string[]): b
 function calculateSimilarity(str1: string, str2: string): number {
   const words1 = new Set(str1.split(/\s+/))
   const words2 = new Set(str2.split(/\s+/))
-  
+
   const intersection = new Set([...words1].filter(x => words2.has(x)))
   const union = new Set([...words1, ...words2])
-  
+
   return intersection.size / union.size
 }

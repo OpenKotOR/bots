@@ -3,6 +3,8 @@
  * (standalone `@openkotor/trask-http-server` or Trask bot embedded Holocron).
  */
 
+import type { SourceWeight } from './types'
+
 export interface TraskSourceDto {
   id: string
   name: string
@@ -223,13 +225,17 @@ export async function traskAsk(
   apiKey?: string,
   threadId?: string,
   model?: string,
+  sourceWeights?: SourceWeight[],
 ): Promise<TraskHistoryRecordDto> {
-  const body: { query: string; threadId?: string; model?: string } = { query }
+  const body: { query: string; threadId?: string; model?: string; sourceWeights?: SourceWeight[] } = { query }
   if (threadId?.trim()) {
     body.threadId = threadId.trim()
   }
   if (model?.trim()) {
     body.model = model.trim()
+  }
+  if (sourceWeights?.length) {
+    body.sourceWeights = sourceWeights
   }
   const res = await fetch(`${apiBase()}/api/trask/ask`, traskRequestInit(apiKey, {
     method: 'POST',

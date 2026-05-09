@@ -14,6 +14,22 @@ export interface SourceDescriptor {
   tags: readonly string[];
 }
 
+const normalizeHost = (host: string): string => host.trim().toLowerCase().replace(/^www\./, "");
+
+const hostMatchesBase = (host: string, baseHost: string): boolean => {
+  const normalizedHost = normalizeHost(host);
+  const normalizedBase = normalizeHost(baseHost);
+  return normalizedHost === normalizedBase || normalizedHost.endsWith(`.${normalizedBase}`);
+};
+
+const normalizeUrlPrefix = (value: string): string => value.trim().replace(/\/+$/, "");
+
+const urlStartsWithPrefix = (url: string, prefix: string): boolean => {
+  const candidate = normalizeUrlPrefix(url);
+  const normalizedPrefix = normalizeUrlPrefix(prefix);
+  return candidate === normalizedPrefix || candidate.startsWith(`${normalizedPrefix}/`);
+};
+
 export interface SearchHit {
   sourceId: string;
   sourceName: string;
@@ -214,7 +230,7 @@ export const defaultSourceCatalog: readonly SourceDescriptor[] = [
     id: "lucasforums-archive",
     name: "LucasForums Archive",
     kind: "website",
-    homeUrl: "https://lucasforumsarchive.com",
+    homeUrl: "https://lucasforumsarchive.org",
     description: "Archived historical forum discussions from the original KOTOR community.",
     freshnessPolicy: "static archive snapshot with selective recrawl",
     approvalScope: "public archived discussions",
@@ -224,7 +240,7 @@ export const defaultSourceCatalog: readonly SourceDescriptor[] = [
     id: "pcgamingwiki-kotor",
     name: "PCGamingWiki",
     kind: "website",
-    homeUrl: "https://www.pcgamingwiki.com/wiki/Star_Wars:_Knights_of_the_Old_Republic",
+    homeUrl: "https://www.pcgamingwiki.com",
     description: "Technical compatibility notes, fixes, and platform troubleshooting for KOTOR and TSL.",
     freshnessPolicy: "daily if referenced often, otherwise weekly",
     approvalScope: "public technical reference",
@@ -301,6 +317,66 @@ export const defaultSourceCatalog: readonly SourceDescriptor[] = [
     tags: ["kotor.js", "javascript", "web", "tooling"],
   },
   {
+    id: "xoreos-repo",
+    name: "xoreos",
+    kind: "github",
+    homeUrl: "https://github.com/xoreos/xoreos",
+    description: "Open-source BioWare Odyssey/Aurora engine work relevant to KOTOR runtime and file behavior.",
+    freshnessPolicy: "main branch sync with release snapshots",
+    approvalScope: "public source code",
+    tags: ["engine", "reimplementation", "xoreos", "c++"],
+  },
+  {
+    id: "xoreos-tools-repo",
+    name: "xoreos-tools",
+    kind: "github",
+    homeUrl: "https://github.com/xoreos/xoreos-tools",
+    description: "Command-line tools for Odyssey/Aurora formats used in KOTOR reverse-engineering workflows.",
+    freshnessPolicy: "main branch sync with release snapshots",
+    approvalScope: "public source code",
+    tags: ["formats", "tooling", "xoreos", "reverse-engineering"],
+  },
+  {
+    id: "kotorblender-repo",
+    name: "KotORBlender",
+    kind: "github",
+    homeUrl: "https://github.com/ndixUR/kotorblender",
+    description: "Blender import/export tooling for KOTOR model and asset workflows.",
+    freshnessPolicy: "weekly source sync",
+    approvalScope: "public source code",
+    tags: ["blender", "models", "assets", "tooling"],
+  },
+  {
+    id: "kotormax-repo",
+    name: "KOTORMax",
+    kind: "github",
+    homeUrl: "https://github.com/bead-v/kotormax",
+    description: "3ds Max tooling for KOTOR model authoring and conversion workflows.",
+    freshnessPolicy: "weekly source sync",
+    approvalScope: "public source code",
+    tags: ["3ds-max", "models", "assets", "tooling"],
+  },
+  {
+    id: "mdledit-repo",
+    name: "MDLEdit",
+    kind: "github",
+    homeUrl: "https://github.com/bead-v/mdledit",
+    description: "KOTOR model editor and conversion tooling used alongside MDLOps workflows.",
+    freshnessPolicy: "weekly source sync",
+    approvalScope: "public source code",
+    tags: ["models", "assets", "conversion", "tooling"],
+  },
+  {
+    id: "tga2tpc-repo",
+    name: "TGA2TPC",
+    kind: "github",
+    homeUrl: "https://github.com/ndixUR/tga2tpc",
+    description: "Texture conversion utility for KOTOR TGA/TPC asset pipelines.",
+    freshnessPolicy: "weekly source sync",
+    approvalScope: "public source code",
+    tags: ["textures", "tpc", "assets", "conversion"],
+  },
+  {
     id: "approved-discord-knowledge",
     name: "Approved Discord Knowledge",
     kind: "discord",
@@ -319,6 +395,51 @@ export const traskApprovedResearchSources: readonly SourceDescriptor[] = default
 export const traskApprovedResearchSourceUrls: readonly string[] = traskApprovedResearchSources.map(
   (source) => source.homeUrl,
 );
+
+export const traskApprovedResearchBaseHosts: readonly string[] = [
+  "lucasforumsarchive.org",
+  "deadlystream.com",
+  "github.com",
+  "kotor.neocities.org",
+  "pcgamingwiki.com",
+];
+
+export const traskApprovedResearchUrlPrefixes: readonly string[] = traskApprovedResearchSources.map(
+  (source) => source.homeUrl,
+);
+
+export const sourceUrlMatchesDescriptor = (url: string, source: SourceDescriptor): boolean => {
+  try {
+    const candidate = new URL(url);
+    const home = new URL(source.homeUrl);
+    if (!hostMatchesBase(candidate.hostname, home.hostname) || !hostMatchesBase(home.hostname, candidate.hostname)) {
+      return false;
+    }
+    const candidatePath = candidate.pathname.replace(/\/+$/, "");
+    const homePath = home.pathname.replace(/\/+$/, "");
+    return homePath === "" || candidatePath === homePath || candidatePath.startsWith(`${homePath}/`);
+  } catch {
+    // Fall back to simple string matching for nonstandard URLs.
+  }
+  return urlStartsWithPrefix(url, source.homeUrl);
+};
+
+export const isTraskApprovedBaseUrl = (url: string): boolean => {
+  try {
+    const { hostname } = new URL(url);
+    return traskApprovedResearchBaseHosts.some((baseHost) => hostMatchesBase(hostname, baseHost));
+  } catch {
+    return false;
+  }
+};
+
+export const isTraskApprovedResearchUrl = (
+  url: string,
+  sources: readonly SourceDescriptor[] = traskApprovedResearchSources,
+): boolean => {
+  if (!isTraskApprovedBaseUrl(url)) return false;
+  return sources.some((source) => sourceUrlMatchesDescriptor(url, source));
+};
 
 export class StaticCatalogSearchProvider implements SearchProvider {
   public constructor(

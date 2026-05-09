@@ -13,7 +13,12 @@ import { normalizeAuthHandlerError, type AuthHandlerThrown } from "@openkotor/pl
 
 import type { SearchProvider } from "@openkotor/retrieval";
 
-import type { ResearchWizardModelOption, ResearchWizardProgressEvent, ResearchWizardQueryHandler } from "@openkotor/trask";
+import type {
+  ResearchWizardModelOption,
+  ResearchWizardProgressEvent,
+  ResearchWizardQueryHandler,
+  ResearchWizardSourcePreference,
+} from "@openkotor/trask";
 
 import { Router, type Request, type Response, type RequestHandler } from "express";
 
@@ -208,7 +213,6 @@ const CANCELED_QUERY_ERROR = "Canceled by newer request.";
 
 const DEFAULT_TRASK_MODEL_OPTIONS: readonly ResearchWizardModelOption[] = [
   { id: "auto", label: "Auto", provider: "ResearchWizard fallback", recommended: true },
-  { id: "openrouter:openrouter/auto", label: "OpenRouter Auto", provider: "OpenRouter", recommended: true },
 ];
 
 const mapModelOption = (option: ResearchWizardModelOption): ResearchWizardModelOption => ({
@@ -217,6 +221,26 @@ const mapModelOption = (option: ResearchWizardModelOption): ResearchWizardModelO
   provider: option.provider,
   ...(option.recommended ? { recommended: true } : {}),
 });
+
+const resolveTraskModelOptions = async (
+  researchWizard: ResearchWizardQueryHandler,
+): Promise<readonly ResearchWizardModelOption[]> => {
+  const dynamicModels = researchWizard.listModels ? await researchWizard.listModels() : [];
+  const seen = new Set<string>();
+  const models: ResearchWizardModelOption[] = [];
+  for (const option of [...DEFAULT_TRASK_MODEL_OPTIONS, ...dynamicModels]) {
+    const id = option.id.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push(mapModelOption({
+      id,
+      label: option.label.trim() || id,
+      provider: option.provider.trim() || "ResearchWizard",
+      ...(option.recommended ? { recommended: true } : {}),
+    }));
+  }
+  return models;
+};
 
 
 
@@ -269,10 +293,35 @@ const normalizeTraskModelFromBody = (raw: ScalarOrObject | undefined): string | 
   }
   const model = raw.trim();
   if (!model) return undefined;
+  if (model === "auto") return undefined;
   if (!MODEL_ID_RE.test(model)) {
     throw Object.assign(new Error("model contains unsupported characters."), { status: 422 });
   }
   return model;
+};
+
+const normalizeSourcePreferencesFromBody = (raw: ScalarOrObject | undefined): ResearchWizardSourcePreference[] | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw Object.assign(new Error("sourceWeights must be an array when provided."), { status: 422 });
+  }
+
+  return raw
+    .map((entry): ResearchWizardSourcePreference | undefined => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+      const value = entry as Record<string, unknown>;
+      const url = typeof value.url === "string" ? value.url.trim() : "";
+      if (!url || !/^https:\/\//iu.test(url)) return undefined;
+      const rawWeight = typeof value.weight === "number" ? value.weight : Number(value.weight ?? 1);
+      const weight = Number.isFinite(rawWeight) ? Math.max(0.1, Math.min(2, rawWeight)) : 1;
+      return {
+        ...(typeof value.name === "string" && value.name.trim() ? { name: value.name.trim() } : {}),
+        url,
+        weight,
+        enabled: value.enabled !== false,
+      };
+    })
+    .filter((entry): entry is ResearchWizardSourcePreference => entry !== undefined);
 };
 
 
@@ -336,9 +385,7 @@ export const createTraskHttpRouter = <TUser extends TraskHttpUser = TraskHttpUse
     options.auth.requireAuth(async (_req, res, _user) => {
       try {
         const trask = requireRuntime();
-        const models = trask.researchWizard.listModels
-          ? await trask.researchWizard.listModels()
-          : DEFAULT_TRASK_MODEL_OPTIONS;
+        const models = await resolveTraskModelOptions(trask.researchWizard);
         res.json({ models: models.map(mapModelOption) });
       } catch (err) {
         handleTraskError(res, err as AuthHandlerThrown);
@@ -549,6 +596,7 @@ export const createTraskHttpRouter = <TUser extends TraskHttpUser = TraskHttpUse
       let threadId: string;
 
       let model: string | undefined;
+      let sourcePreferences: ResearchWizardSourcePreference[] | undefined;
 
       const persist = shouldPersistForUser(user);
 
@@ -556,13 +604,22 @@ export const createTraskHttpRouter = <TUser extends TraskHttpUser = TraskHttpUse
 
       try {
 
-        const body = req.body as { query?: ScalarOrObject; threadId?: ScalarOrObject; model?: ScalarOrObject };
+        const body = req.body as { query?: ScalarOrObject; threadId?: ScalarOrObject; model?: ScalarOrObject; sourceWeights?: ScalarOrObject };
 
         query = normalizeTraskQuery(body.query);
 
         threadId = normalizeThreadIdFromBody(body.threadId);
 
         model = normalizeTraskModelFromBody(body.model);
+
+        sourcePreferences = normalizeSourcePreferencesFromBody(body.sourceWeights);
+
+        if (model) {
+          const allowedModels = await resolveTraskModelOptions(trask.researchWizard);
+          if (!allowedModels.some((option) => option.id === model)) {
+            throw Object.assign(new Error("model is not available in the current ResearchWizard fallback list."), { status: 422 });
+          }
+        }
 
       } catch (err) {
 
@@ -586,7 +643,10 @@ export const createTraskHttpRouter = <TUser extends TraskHttpUser = TraskHttpUse
 
       if (!persist) {
         try {
-          const result = await trask.researchWizard.answerQuestion(query, undefined, model ? { model } : undefined);
+          const result = await trask.researchWizard.answerQuestion(query, undefined, {
+            ...(model ? { model } : {}),
+            ...(sourcePreferences ? { sourcePreferences } : {}),
+          });
 
           const record: TraskQueryRecord = {
             queryId,
@@ -664,7 +724,10 @@ export const createTraskHttpRouter = <TUser extends TraskHttpUser = TraskHttpUse
               ...(ev.detail !== undefined ? { detail: ev.detail } : {}),
               ...(ev.sources?.length ? { sources: mapDescriptorsToSourceRecords(ev.sources) } : {}),
             });
-          }, model ? { model } : undefined);
+          }, {
+            ...(model ? { model } : {}),
+            ...(sourcePreferences ? { sourcePreferences } : {}),
+          });
 
           const prev = await trask.queryRepository.getByQueryId(queryId);
 

@@ -10,6 +10,7 @@ import type {
   ResearchWizardAnswer,
   ResearchWizardProgressEvent,
   ResearchWizardQueryHandler,
+  ResearchWizardQueryOptions,
 } from "@openkotor/trask";
 import express from "express";
 import request from "supertest";
@@ -199,6 +200,81 @@ test("GET /sources returns JSON when authenticated", async () => {
   assert.equal(res.body.sources[0].id, "test-src");
 });
 
+test("GET /models defaults to Auto only when the wizard has no live model list", async () => {
+  const queryRepository = new JsonTraskQueryRepository(path.join(tmpDir, `qm-${Math.random()}.json`));
+  const searchProvider = {
+    async listSources() {
+      return [];
+    },
+    async search() {
+      return [];
+    },
+    async queueReindex() {
+      return { queuedSourceIds: [] as string[], mode: "file-queue" as const };
+    },
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api/trask",
+    createTraskHttpRouter({
+      runtime: {
+        searchProvider,
+        researchWizard: mockWizard,
+        queryRepository,
+      },
+      auth: {
+        requireAuth: (handler) => async (req, res) => handler(req, res, { id: "user-1" }),
+      },
+    }),
+  );
+
+  const res = await request(app).get("/api/trask/models");
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.models, [
+    { id: "auto", label: "Auto", provider: "ResearchWizard fallback", recommended: true },
+  ]);
+});
+
+test("POST /ask rejects model ids outside the current ResearchWizard list", async () => {
+  const queryRepository = new JsonTraskQueryRepository(path.join(tmpDir, `qmr-${Math.random()}.json`));
+  const searchProvider = {
+    async listSources() {
+      return [];
+    },
+    async search() {
+      return [];
+    },
+    async queueReindex() {
+      return { queuedSourceIds: [] as string[], mode: "file-queue" as const };
+    },
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api/trask",
+    createTraskHttpRouter({
+      runtime: {
+        searchProvider,
+        researchWizard: mockWizard,
+        queryRepository,
+      },
+      auth: {
+        requireAuth: (handler) => async (req, res) => handler(req, res, { id: "user-1" }),
+      },
+    }),
+  );
+
+  const res = await request(app)
+    .post("/api/trask/ask")
+    .send({ query: "What is KOTOR?", model: "openrouter:anthropic/claude-opus-4.1" });
+
+  assert.equal(res.status, 422);
+  assert.match(res.body.error, /model is not available/i);
+});
+
 test("POST /ask persists, returns 202, completes asynchronously", async () => {
   const queryRepository = new JsonTraskQueryRepository(path.join(tmpDir, `q2-${Math.random()}.json`));
   const searchProvider = {
@@ -245,6 +321,63 @@ test("POST /ask persists, returns 202, completes asynchronously", async () => {
   }
   assert.equal(row?.status, "complete");
   assert.ok(String(row?.answer).includes("Stub answer"));
+});
+
+test("POST /ask forwards source weights to the research wizard", async () => {
+  const queryRepository = new JsonTraskQueryRepository(path.join(tmpDir, `q-weights-${Math.random()}.json`));
+  const searchProvider = {
+    async listSources() {
+      return [];
+    },
+    async search() {
+      return [];
+    },
+    async queueReindex() {
+      return { queuedSourceIds: [] as string[], mode: "file-queue" as const };
+    },
+  };
+  let receivedOptions: ResearchWizardQueryOptions | undefined;
+  const weightedWizard: ResearchWizardQueryHandler = {
+    async answerQuestion(_query, _onProgress, options) {
+      receivedOptions = options;
+      return {
+        answer: "Weighted answer.\n\nSources\n1. Test Source - https://example.com",
+        approvedSources: [mockSource],
+      };
+    },
+  };
+
+  const app = express();
+  app.use(express.json());
+  app.use(
+    "/api/trask",
+    createTraskHttpRouter({
+      runtime: {
+        searchProvider,
+        researchWizard: weightedWizard,
+        queryRepository,
+      },
+      auth: {
+        requireAuth: (handler) => async (req, res) => handler(req, res, { id: "user-1", persistQueries: false }),
+      },
+    }),
+  );
+
+  const res = await request(app)
+    .post("/api/trask/ask")
+    .send({
+      query: "What is KOTOR?",
+      sourceWeights: [
+        { name: "Deadly Stream", url: "https://deadlystream.com", weight: 1.8, enabled: true },
+        { name: "GitHub KOTOR Projects", url: "https://github.com", weight: 0.4, enabled: false },
+      ],
+    });
+
+  assert.equal(res.status, 201);
+  assert.equal(receivedOptions?.sourcePreferences?.length, 2);
+  assert.equal(receivedOptions?.sourcePreferences?.[0]?.url, "https://deadlystream.com");
+  assert.equal(receivedOptions?.sourcePreferences?.[0]?.weight, 1.8);
+  assert.equal(receivedOptions?.sourcePreferences?.[1]?.enabled, false);
 });
 
 test("GET /thread/:threadId returns persisted rows for the authenticated user", async () => {

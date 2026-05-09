@@ -50,8 +50,7 @@ export function SourceWeightsDialog({
         <DialogHeader>
           <DialogTitle className="text-xl">Source Prioritization</DialogTitle>
           <DialogDescription>
-            Adjust how much each source influences the final answer. Higher weights
-            mean that source's results are trusted more.
+            Adjust which approved source families Trask may use and how strongly each family is prioritized.
           </DialogDescription>
         </DialogHeader>
 

@@ -2,6 +2,180 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "build: workspace",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"build"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"problemMatcher": [
+				"$tsc"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false
+			}
+		},
+		{
+			"label": "check: workspace",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"check"
+			],
+			"group": "test",
+			"problemMatcher": [
+				"$tsc"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false
+			}
+		},
+		{
+			"label": "dev: trask bot",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:trask"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			}
+		},
+		{
+			"label": "dev: trask http server",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:trask-http"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			}
+		},
+		{
+			"label": "dev: holocron web",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:holocron-web"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			},
+			"problemMatcher": {
+				"owner": "vite",
+				"pattern": {
+					"regexp": "^$"
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": ".*",
+					"endsPattern": "Local:\\s+http://"
+				}
+			}
+		},
+		{
+			"label": "dev: hk bot",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:hk"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			}
+		},
+		{
+			"label": "dev: pazaak bot",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:pazaak"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			}
+		},
+		{
+			"label": "dev: pazaak world",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"dev:pazaak-world"
+			],
+			"isBackground": true,
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated",
+				"clear": false
+			}
+		},
+		{
+			"label": "build: pazaak nakama runtime",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"build:pazaak-nakama"
+			],
+			"group": "build",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false
+			}
+		},
+		{
+			"label": "smoke: trask discord commands",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"discord:smoke-trask-commands"
+			],
+			"group": "test",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false
+			}
+		},
+		{
+			"label": "smoke: trask gptr",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"smoke:trask-gptr"
+			],
+			"group": "test",
+			"presentation": {
+				"reveal": "always",
+				"panel": "shared",
+				"clear": false
+			}
+		},
+		{
 			"label": "probe-shell-health",
 			"type": "shell",
 			"command": "cmd",

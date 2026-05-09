@@ -9,6 +9,9 @@ export interface HeadlessAiResearchWizardResult {
   readonly research_information?: {
     readonly source_urls?: readonly string[] | null;
     readonly visited_urls?: readonly string[] | null;
+    readonly query_domains?: readonly string[] | null;
+    readonly allowed_url_prefixes?: readonly string[] | null;
+    readonly rejected_source_urls?: readonly string[] | null;
   };
 }
 
@@ -25,6 +28,7 @@ export interface HeadlessAiResearchWizardRequestPayload {
   readonly custom_prompt?: string;
   readonly source_urls?: readonly string[];
   readonly query_domains?: readonly string[];
+  readonly allowed_url_prefixes?: readonly string[];
   readonly model?: string;
   readonly report_type?: string;
   readonly report_source?: string;
@@ -43,6 +47,8 @@ const spawnHeadless = (
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
+        TRASK_ALLOWED_QUERY_DOMAINS: (payload.query_domains ?? []).join("\n"),
+        TRASK_ALLOWED_URL_PREFIXES: (payload.allowed_url_prefixes ?? []).join("\n"),
         // Ensure Python subprocess outputs UTF-8 on all platforms (fixes charmap errors on Windows).
         PYTHONIOENCODING: "utf-8",
         PYTHONUTF8: "1",
@@ -210,9 +216,14 @@ export const listHeadlessGptResearcherModels = async (
     "root = Path(sys.argv[1]).resolve()",
     "fallbacks = root.parent / 'llm_fallbacks' / 'src'",
     "sys.path.insert(0, str(fallbacks))",
-    "from llm_fallbacks import get_fallback_list",
-    "print(json.dumps(list(get_fallback_list('chat'))[:60]))",
-  ].join("; ");
+    "try:",
+    "    from llm_fallbacks.config import FREE_CHAT_MODELS",
+    "    models = [name for name, _ in FREE_CHAT_MODELS]",
+    "except Exception:",
+    "    from llm_fallbacks import filter_models",
+    "    models = list(filter_models(model_type='chat', free_only=True))",
+    "print(json.dumps(models[:60]))",
+  ].join("\n");
 
   const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
     (resolvePromise, rejectPromise) => {

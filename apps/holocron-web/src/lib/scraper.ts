@@ -13,7 +13,7 @@ interface PromptSearchResponse {
 export async function scrapeDeadlyStream(query: string, promptTemplate?: string): Promise<ScrapedContent[]> {
   try {
     const searchUrl = `https://deadlystream.com/search/?q=${encodeURIComponent(query)}&quick=1`
-    
+
     const template = promptTemplate || `You are a web search assistant. Based on the query "{query}", generate 2-3 realistic forum discussion snippets that might appear on a Star Wars game modding forum (Deadly Stream). Each snippet should be 2-3 sentences of technical or community discussion.
 
 Return as JSON with format:
@@ -22,13 +22,13 @@ Return as JSON with format:
     {"title": "Discussion Title", "snippet": "Content snippet...", "relevance": 0.85}
   ]
 }`
-    
+
     const promptText = template.replace('{query}', query)
     const searchPrompt = window.spark.llmPrompt`${promptText}`
-    
+
     const response = await window.spark.llm(searchPrompt, 'gpt-4o-mini', true)
     const data = JSON.parse(response) as PromptSearchResponse
-    
+
     return data.results.map((result: PromptSearchResult, idx: number) => ({
       url: `https://deadlystream.com/topic/${1000 + idx}`,
       title: result.title,
@@ -52,13 +52,13 @@ Return as JSON with format:
     {"title": "Post Title", "snippet": "Content snippet...", "relevance": 0.80}
   ]
 }`
-    
+
     const promptText = template.replace('{query}', query)
     const searchPrompt = window.spark.llmPrompt`${promptText}`
-    
+
     const response = await window.spark.llm(searchPrompt, 'gpt-4o-mini', true)
     const data = JSON.parse(response) as PromptSearchResponse
-    
+
     return data.results.map((result: PromptSearchResult, idx: number) => ({
       url: `https://lucasforumsarchive.org/thread/${2000 + idx}`,
       title: result.title,
@@ -82,13 +82,13 @@ Return as JSON with format:
     {"title": "Repository/File Name", "snippet": "Content snippet...", "relevance": 0.75}
   ]
 }`
-    
+
     const promptText = template.replace('{query}', query)
     const searchPrompt = window.spark.llmPrompt`${promptText}`
-    
+
     const response = await window.spark.llm(searchPrompt, 'gpt-4o-mini', true)
     const data = JSON.parse(response) as PromptSearchResponse
-    
+
     return data.results.map((result: PromptSearchResult, idx: number) => ({
       url: `https://github.com/lucasarts-mods/${idx}`,
       title: result.title,
@@ -102,16 +102,54 @@ Return as JSON with format:
   }
 }
 
+export async function scrapeKotorNeocities(query: string): Promise<ScrapedContent[]> {
+  try {
+    const prompt = window.spark.llmPrompt`Generate 2 concise search-style snippets from kotor.neocities.org that would help answer this KOTOR/TSL question: ${query}. Return JSON: {"results":[{"title":"...","snippet":"...","relevance":0.75}]}`
+    const response = await window.spark.llm(prompt, 'gpt-4o-mini', true)
+    const data = JSON.parse(response) as PromptSearchResponse
+    return data.results.map((result, idx) => ({
+      url: `https://kotor.neocities.org/${idx === 0 ? '' : `notes/${idx}`}`,
+      title: result.title,
+      content: result.snippet,
+      snippets: [result.snippet],
+      relevanceScore: result.relevance || 0.7,
+    }))
+  } catch (error) {
+    console.error('KOTOR Neocities scraping error:', error)
+    return []
+  }
+}
+
+export async function scrapePCGamingWiki(query: string): Promise<ScrapedContent[]> {
+  try {
+    const prompt = window.spark.llmPrompt`Generate 2 concise PCGamingWiki-style compatibility or troubleshooting snippets for this KOTOR/TSL question: ${query}. Return JSON: {"results":[{"title":"...","snippet":"...","relevance":0.75}]}`
+    const response = await window.spark.llm(prompt, 'gpt-4o-mini', true)
+    const data = JSON.parse(response) as PromptSearchResponse
+    return data.results.map((result, idx) => ({
+      url: idx === 0
+        ? 'https://www.pcgamingwiki.com/wiki/Star_Wars:_Knights_of_the_Old_Republic'
+        : 'https://www.pcgamingwiki.com/wiki/Star_Wars:_Knights_of_the_Old_Republic_II_-_The_Sith_Lords',
+      title: result.title,
+      content: result.snippet,
+      snippets: [result.snippet],
+      relevanceScore: result.relevance || 0.7,
+    }))
+  } catch (error) {
+    console.error('PCGamingWiki scraping error:', error)
+    return []
+  }
+}
+
 export async function extractRelevantSnippets(content: string, query: string): Promise<string[]> {
   const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 20)
-  
+
   const queryWords = query.toLowerCase().split(/\s+/)
   const scoredSentences = sentences.map(sentence => {
     const lowerSentence = sentence.toLowerCase()
     const score = queryWords.filter(word => lowerSentence.includes(word)).length
     return { sentence: sentence.trim(), score }
   })
-  
+
   return scoredSentences
     .filter(s => s.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -122,9 +160,9 @@ export async function extractRelevantSnippets(content: string, query: string): P
 export function calculateRelevanceScore(content: ScrapedContent, query: string): number {
   const queryWords = query.toLowerCase().split(/\s+/)
   const contentText = (content.title + ' ' + content.content).toLowerCase()
-  
+
   const matchCount = queryWords.filter(word => contentText.includes(word)).length
   const baseScore = matchCount / queryWords.length
-  
+
   return Math.min(baseScore * content.relevanceScore, 1.0)
 }

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { Message as MessageType, AgentResult, SourceWeight, DEFAULT_SOURCE_WEIGHTS, Conversation, QueryType, MessageResearchStep, isMessageArray } from '@/lib/types'
+import { Message as MessageType, AgentResult, SourceWeight, DEFAULT_SOURCE_WEIGHTS, Conversation, QueryType, MessageResearchStep, isMessageArray, mergeSourceWeights } from '@/lib/types'
 import { Message } from '@/components/Message'
 import { AgentPanel } from '@/components/AgentPanel'
 import { ConversationSidebar } from '@/components/ConversationSidebar'
@@ -21,9 +21,8 @@ import {
 import { fluxTokensFromQuery, holocronQuerySignature } from '@/lib/holocron-live'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import { Toaster } from '@/components/ui/sonner'
-import { ArrowRight, Sliders, Keyboard, Code } from '@phosphor-icons/react'
+import { ArrowRight, Sliders, Keyboard, Code, ArrowDown, List } from '@phosphor-icons/react'
 import { toast } from 'sonner'
 import { useKeyboardShortcuts } from '@/hooks/use-keyboard-shortcuts'
 import { usePrompts } from '@/lib/prompts'
@@ -84,6 +83,7 @@ type HolocronResearchJob = {
   queryType: QueryType
   serverQueryId?: string
   modelId?: string
+  sourceWeights?: SourceWeight[]
   state: HolocronResearchJobState
   attemptCount: number
   pollFailures: number
@@ -102,6 +102,7 @@ function isHolocronResearchJob(value: unknown): value is HolocronResearchJob {
     && typeof o.question === 'string'
     && typeof o.assistantMessageId === 'string'
     && (o.modelId === undefined || typeof o.modelId === 'string')
+    && (o.sourceWeights === undefined || Array.isArray(o.sourceWeights))
     && (o.state === 'queued' || o.state === 'submitted')
     && typeof o.attemptCount === 'number'
     && typeof o.pollFailures === 'number'
@@ -205,19 +206,27 @@ function localResearchStep(phase: string, detail: string): MessageResearchStep {
   }
 }
 
-function createAssistantMessageFromTraskRecord(rec: TraskHistoryRecordDto, queryType: QueryType): MessageType | null {
-  if (rec.status !== 'complete' || !rec.answer) return null
-  const researchSteps = mapResearchStepsFromRecord(rec)
-  const mappedSources = (rec.sources ?? []).map((s) => ({
+function normalizeTraskAnswerText(answer: string | null | undefined): string {
+  return answer?.replace(/\r\n/g, '\n').trim() ?? ''
+}
+
+function mapSourcesFromTraskRecord(rec: TraskHistoryRecordDto) {
+  return (rec.sources ?? []).map((s) => ({
     name: s.name,
     url: s.url,
     confidence: 1,
   }))
+}
+
+function createAssistantMessageFromTraskRecord(rec: TraskHistoryRecordDto, queryType: QueryType): MessageType | null {
+  const answer = normalizeTraskAnswerText(rec.answer)
+  if (rec.status !== 'complete' || !answer) return null
+  const researchSteps = mapResearchStepsFromRecord(rec)
+  const mappedSources = mapSourcesFromTraskRecord(rec)
   return {
     id: `srv-${rec.queryId}-a`,
     role: 'assistant',
-    content: rec.answer,
-    expandedContent: rec.answer,
+    content: answer,
     sources: mappedSources,
     timestamp: Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
     isExpanded: false,
@@ -225,15 +234,42 @@ function createAssistantMessageFromTraskRecord(rec: TraskHistoryRecordDto, query
       {
         agentName: 'Trask',
         source: 'holocron',
-        snippet: rec.answer.slice(0, 280),
+        snippet: answer.slice(0, 280),
         confidence: 1,
         status: 'complete',
-        retrievedContent: rec.answer,
+        retrievedContent: answer,
       },
     ],
     queryType,
     researchStatus: 'complete',
     researchSteps,
+  }
+}
+
+function createDegradedMessageFromTraskRecord(rec: TraskHistoryRecordDto, queryType: QueryType): MessageType {
+  const mappedSources = mapSourcesFromTraskRecord(rec)
+  const content = mappedSources.length > 0
+    ? 'Trask completed, but the backend returned no visible answer text. The source cards below are the only usable result from this run.'
+    : 'Trask completed, but the backend returned no visible answer text. Try asking again or narrow the question.'
+  return {
+    id: `srv-${rec.queryId}-degraded`,
+    role: 'assistant',
+    content,
+    sources: mappedSources,
+    timestamp: Date.parse(rec.completedAt ?? rec.createdAt) || Date.now(),
+    isExpanded: false,
+    agentResults: [
+      {
+        agentName: 'Trask',
+        source: 'holocron',
+        snippet: content,
+        confidence: mappedSources.length > 0 ? 0.35 : 0,
+        status: 'failed',
+      },
+    ],
+    queryType,
+    researchStatus: 'failed',
+    researchSteps: mapResearchStepsFromRecord(rec),
   }
 }
 
@@ -368,6 +404,8 @@ function mapTraskHistoryToMessages(records: TraskHistoryRecordDto[]): MessageTyp
     const assistantMessage = createAssistantMessageFromTraskRecord(rec, 'general')
     if (assistantMessage) {
       syncedMessages.push(assistantMessage)
+    } else if (rec.status === 'complete') {
+      syncedMessages.push(createDegradedMessageFromTraskRecord(rec, 'general'))
     } else if (rec.status === 'failed') {
       syncedMessages.push(createFailedMessageFromTraskRecord(rec, 'general'))
     } else {
@@ -459,6 +497,7 @@ function App() {
   const [conversations, setConversations] = usePersistentLocalState<Conversation[]>(CONVERSATIONS_KEY, loadInitialConversations())
   const [activeConversationId, setActiveConversationId] = usePersistentLocalState<string | null>('active-conversation-id', null)
   const [sourceWeights, setSourceWeights] = usePersistentLocalState<SourceWeight[]>('source-weights', DEFAULT_SOURCE_WEIGHTS)
+  const effectiveSourceWeights = useMemo(() => mergeSourceWeights(sourceWeights), [sourceWeights])
   const [traskApiKey, setTraskApiKey] = usePersistentLocalState<string>('qa-trask-web-api-key', '')
   const [researchJobs, setResearchJobs] = usePersistentLocalState<HolocronResearchJob[]>(HOLOCRON_RESEARCH_JOBS_KEY, [])
   const [selectedTraskModel, setSelectedTraskModel] = usePersistentLocalState<string>('holocron-trask-model', TRASK_MODEL_AUTO)
@@ -489,6 +528,8 @@ function App() {
   const [holocronAnswerBondTicks, setHolocronAnswerBondTicks] = useState(0)
   const [holocronLiveQuery, setHolocronLiveQuery] = useState('')
   const [livePulses, setLivePulses] = useState<HolocronRetrievalPulse[]>([])
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
+  const [isMobileViewport, setIsMobileViewport] = useState(false)
   const traceSeenRef = useRef<Set<string>>(new Set())
   const { prompts } = usePrompts()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -497,6 +538,34 @@ function App() {
   const researchWorkersRef = useRef<Set<string>>(new Set())
   const researchConversationWorkersRef = useRef<Set<string>>(new Set())
   const researchJobsRef = useRef<HolocronResearchJob[]>([])
+  const shouldStickToBottomRef = useRef(true)
+  const jumpVisibleRef = useRef(false)
+  const mobileSidebarRef = useRef<HTMLDivElement>(null)
+  const mobileSidebarToggleButtonRef = useRef<HTMLButtonElement>(null)
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null)
+
+  const updateScrollStickiness = useCallback(() => {
+    if (!scrollRef.current) return
+    const el = scrollRef.current
+    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+    const nearBottom = remaining <= 120
+    const hasOverflow = el.scrollHeight > el.clientHeight + 1
+    const nextJumpVisible = hasOverflow && !nearBottom
+    shouldStickToBottomRef.current = nearBottom
+    if (jumpVisibleRef.current !== nextJumpVisible) {
+      jumpVisibleRef.current = nextJumpVisible
+      setShowJumpToLatest(nextJumpVisible)
+    }
+  }, [])
+
+  const jumpToLatest = useCallback(() => {
+    if (!scrollRef.current) return
+    const el = scrollRef.current
+    el.scrollTop = el.scrollHeight
+    shouldStickToBottomRef.current = true
+    jumpVisibleRef.current = false
+    setShowJumpToLatest(false)
+  }, [])
 
   const activeConversation = (conversations || []).find(c => c.id === activeConversationId)
   const messages = activeConversation?.messages || []
@@ -532,6 +601,13 @@ function App() {
       cancelled = true
     }
   }, [traskApiKey])
+
+  useEffect(() => {
+    const normalized = normalizeTraskModelSelection(selectedTraskModel, effectiveTraskModelOptions)
+    if (selectedTraskModel !== normalized) {
+      setSelectedTraskModel(normalized)
+    }
+  }, [effectiveTraskModelOptions, selectedTraskModel, setSelectedTraskModel])
 
   const starterSuggestions = useMemo(
     () => priorUserQuestionsFromOtherThreads(conversations || [], activeConversationId ?? null),
@@ -686,6 +762,9 @@ function App() {
         return [...others, newConversation]
       })
       setActiveConversationId(convId)
+      if (isMobileViewport) {
+        setSidebarCollapsed(true)
+      }
       try {
         sessionStorage.removeItem(`holocron-ephemeral-${tid}`)
       } catch {
@@ -704,6 +783,9 @@ function App() {
 
     setConversations((current) => [...(current || []), newConversation])
     setActiveConversationId(newConversation.id)
+    if (isMobileViewport) {
+      setSidebarCollapsed(true)
+    }
   }
 
   const handleSidebarResizeStart = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -957,13 +1039,15 @@ function App() {
   }, [conversations, holocronSession.status, holocronThreadId, legacySparkMode])
 
   useEffect(() => {
-    if (!scrollRef.current) {
+    if (!scrollRef.current || !shouldStickToBottomRef.current) {
       return
     }
-    const scrollViewport = scrollRef.current.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]')
-    const scrollTarget = scrollViewport ?? scrollRef.current
-    scrollTarget.scrollTop = scrollTarget.scrollHeight
+    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [messages, activeAgents])
+
+  useEffect(() => {
+    updateScrollStickiness()
+  }, [messages.length, activeAgents.length, updateScrollStickiness])
 
   useEffect(() => {
     const id = window.setTimeout(() => setHolocronLiveQuery(input.trim()), 120)
@@ -979,8 +1063,95 @@ function App() {
     return () => window.clearInterval(id)
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    const media = window.matchMedia('(max-width: 767px)')
+    const sync = () => setIsMobileViewport(media.matches)
+    sync()
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', sync)
+      return () => media.removeEventListener('change', sync)
+    }
+    media.addListener(sync)
+    return () => media.removeListener(sync)
+  }, [])
+
+  useEffect(() => {
+    if (isMobileViewport) {
+      setSidebarCollapsed(true)
+    }
+  }, [isMobileViewport, setSidebarCollapsed])
+
+  useEffect(() => {
+    if (!isMobileViewport || sidebarCollapsed) {
+      return
+    }
+
+    lastFocusedElementRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+
+    const focusSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+    const focusFirstInDrawer = () => {
+      const root = mobileSidebarRef.current
+      if (!root) return
+      const firstFocusable = root.querySelector<HTMLElement>(focusSelector)
+      firstFocusable?.focus()
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSidebarCollapsed(true)
+        return
+      }
+      if (event.key !== 'Tab') {
+        return
+      }
+      const root = mobileSidebarRef.current
+      if (!root) {
+        return
+      }
+      const focusables = Array.from(root.querySelectorAll<HTMLElement>(focusSelector))
+      if (focusables.length === 0) {
+        return
+      }
+
+      const first = focusables[0]!
+      const last = focusables[focusables.length - 1]!
+      const active = document.activeElement as HTMLElement | null
+
+      if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault()
+        last.focus()
+      }
+    }
+
+    focusFirstInDrawer()
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      const canFocus = (el: HTMLElement | null): el is HTMLElement =>
+        Boolean(el && !el.hasAttribute('disabled') && el.getClientRects().length > 0)
+      if (canFocus(mobileSidebarToggleButtonRef.current)) {
+        mobileSidebarToggleButtonRef.current.focus()
+      } else if (canFocus(lastFocusedElementRef.current)) {
+        lastFocusedElementRef.current.focus()
+      }
+    }
+  }, [isMobileViewport, setSidebarCollapsed, sidebarCollapsed])
+
   const handleSelectConversation = (id: string) => {
     setActiveConversationId(id)
+    if (isMobileViewport) {
+      setSidebarCollapsed(true)
+    }
   }
 
   const handleRenameConversation = (id: string, newTitle: string) => {
@@ -992,11 +1163,13 @@ function App() {
   }
 
   const handleDeleteConversation = (id: string) => {
-    setConversations((current) => (current || []).filter((conv) => conv.id !== id))
-    if (activeConversationId === id) {
-      const remaining = (conversations || []).filter((conv) => conv.id !== id)
-      setActiveConversationId(remaining.length > 0 ? remaining[0].id : null)
-    }
+    setConversations((current) => {
+      const remaining = (current || []).filter((conv) => conv.id !== id)
+      if (activeConversationId === id) {
+        setActiveConversationId(remaining.length > 0 ? remaining[0].id : null)
+      }
+      return remaining
+    })
   }
 
   const handleImportConversations = (importedConversations: Conversation[], importedSourceWeights?: SourceWeight[]) => {
@@ -1006,6 +1179,9 @@ function App() {
     }
     if (importedConversations.length > 0) {
       setActiveConversationId(importedConversations[0].id)
+    }
+    if (isMobileViewport) {
+      setSidebarCollapsed(true)
     }
   }
 
@@ -1018,7 +1194,7 @@ function App() {
           const title = q
             ? q.substring(0, 50) + (q.length > 50 ? '...' : '')
             : conversationDisplayTitle(conv.title)
-          
+
           return {
             ...conv,
             messages: updatedMessages,
@@ -1091,7 +1267,7 @@ function App() {
   const completeResearchJob = useCallback(
     (job: HolocronResearchJob, record: TraskHistoryRecordDto) => {
       const assistantMessage = createAssistantMessageFromTraskRecord(record, job.queryType)
-      if (!assistantMessage || !record.answer) return
+        ?? createDegradedMessageFromTraskRecord(record, job.queryType)
       replaceResearchAssistantMessage(job, assistantMessage)
       setResearchJobs((current) => normalizeResearchJobs(current).filter((candidate) => candidate.clientId !== job.clientId))
       if (job.conversationId === activeConversationId) {
@@ -1109,7 +1285,7 @@ function App() {
         }))
       }
       if (touchedZones.size === 0) touchedZones.add('core')
-      scheduleAnswerFluxShards(record.answer, Array.from(touchedZones), appendAnswerFlux)
+      scheduleAnswerFluxShards(assistantMessage.content, Array.from(touchedZones), appendAnswerFlux)
       setHolocronInteractionCount((n) => n + 1 + touchedZones.size)
     },
     [activeConversationId, appendAnswerFlux, replaceResearchAssistantMessage, setResearchJobs],
@@ -1229,7 +1405,13 @@ function App() {
           return
         }
 
-        const record = await traskAsk(job.question, traskApiKey || undefined, job.threadId, modelPayloadValue(job.modelId))
+        const record = await traskAsk(
+          job.question,
+          traskApiKey || undefined,
+          job.threadId,
+          modelPayloadValue(job.modelId),
+          mergeSourceWeights(job.sourceWeights ?? effectiveSourceWeights),
+        )
         if (cancelled || !isJobCurrent()) return
         if (record.status === 'complete') {
           completeResearchJob(job, record)
@@ -1268,8 +1450,8 @@ function App() {
         .filter((job) => job.nextAttemptAt <= now)
         .slice(0, 4)
         .forEach((job) => {
-        void processJob(job)
-      })
+          void processJob(job)
+        })
     }
 
     runDueJobs()
@@ -1288,14 +1470,14 @@ function App() {
     traskApiKey,
   ])
 
-  const handleToggleExpand = (id: string) => {
+  const handleToggleExpand = useCallback((id: string) => {
     if (!activeConversationId) return
-    
+
     const updatedMessages = messages.map((msg) =>
       msg.id === id ? { ...msg, isExpanded: !msg.isExpanded } : msg
     )
     updateConversation(activeConversationId, updatedMessages)
-  }
+  }, [activeConversationId, messages])
 
   const cancelConversationResearch = useCallback((conversationId: string): HolocronResearchJob[] => {
     const jobs = researchJobsRef.current.filter((job) => job.conversationId === conversationId)
@@ -1398,6 +1580,7 @@ function App() {
           question: userMessage.content,
           assistantMessageId,
           modelId: selectedModelId,
+          sourceWeights: effectiveSourceWeights,
           queryType,
           state: 'queued',
           attemptCount: 0,
@@ -1420,7 +1603,7 @@ function App() {
         return
       }
 
-      const agentResults = await performMultiAgentRetrieval(userMessage.content, sourceWeights || DEFAULT_SOURCE_WEIGHTS, prompts)
+      const agentResults = await performMultiAgentRetrieval(userMessage.content, effectiveSourceWeights, prompts)
       setActiveAgents(agentResults)
 
       await new Promise((resolve) => setTimeout(resolve, 500))
@@ -1479,10 +1662,10 @@ function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col bg-background relative overflow-x-hidden overflow-y-hidden">
+    <div className="h-dvh flex flex-col bg-background relative overflow-x-hidden overflow-y-hidden">
       <TopNav holocronSession={holocronSession} onHolocronLogout={handleHolocronLogout} />
-      
-      <div className="flex-1 flex min-h-0 mt-14 relative">
+
+      <div className="flex-1 flex min-h-0 pt-14 relative">
         <div className="holocron-atmosphere pointer-events-none overflow-visible" aria-hidden>
           <div className="holocron-atmosphere__panel" />
           <div className="holocron-atmosphere__halftone" />
@@ -1501,13 +1684,13 @@ function App() {
           draftQuery={holocronLiveQuery}
           livePulses={livePulses}
         />
-        
+
         <Toaster position="top-center" />
-        
+
         <SourceWeightsDialog
           open={isSettingsOpen}
           onOpenChange={setIsSettingsOpen}
-          sourceWeights={sourceWeights || DEFAULT_SOURCE_WEIGHTS}
+          sourceWeights={effectiveSourceWeights}
           onSourceWeightsChange={(weights) => setSourceWeights(weights)}
           legacySparkMode={legacySparkMode}
           traskApiKey={traskApiKey || ''}
@@ -1524,36 +1707,55 @@ function App() {
           onOpenChange={setIsPromptsOpen}
         />
 
-        <div className="relative flex-shrink-0 min-h-0">
-          <ConversationSidebar
-            conversations={conversations || []}
-            activeConversationId={activeConversationId || null}
-            onSelectConversation={handleSelectConversation}
-            onCreateConversation={handleCreateConversation}
-            disableCreateConversation={isProcessing}
-            onDeleteConversation={handleDeleteConversation}
-            onRenameConversation={handleRenameConversation}
-            sourceWeights={sourceWeights || DEFAULT_SOURCE_WEIGHTS}
-            onImport={handleImportConversations}
-            searchInputRef={searchInputRef}
-            width={clampSidebarWidth(sidebarWidth)}
-            collapsed={sidebarCollapsed}
-            onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-          />
-          {!sidebarCollapsed && (
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize history sidebar"
-              onMouseDown={handleSidebarResizeStart}
-              className="absolute top-0 -right-1 h-full w-2 cursor-col-resize z-20"
+        {(!isMobileViewport || !sidebarCollapsed) && (
+          <div
+            ref={isMobileViewport ? mobileSidebarRef : undefined}
+            className={isMobileViewport ? 'absolute inset-y-0 left-0 z-30 min-h-0 shadow-2xl shadow-black/45' : 'relative flex-shrink-0 min-h-0'}
+            role={isMobileViewport ? 'dialog' : undefined}
+            aria-modal={isMobileViewport ? true : undefined}
+            aria-label={isMobileViewport ? 'Conversation history' : undefined}
+          >
+            <ConversationSidebar
+              conversations={conversations || []}
+              activeConversationId={activeConversationId || null}
+              onSelectConversation={handleSelectConversation}
+              onCreateConversation={handleCreateConversation}
+              disableCreateConversation={isProcessing}
+              onDeleteConversation={handleDeleteConversation}
+              onRenameConversation={handleRenameConversation}
+              sourceWeights={effectiveSourceWeights}
+              onImport={handleImportConversations}
+              searchInputRef={searchInputRef}
+              width={isMobileViewport ? 320 : clampSidebarWidth(sidebarWidth)}
+              collapsed={!isMobileViewport && sidebarCollapsed}
+              onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
             />
-          )}
-        </div>
+            {!isMobileViewport && !sidebarCollapsed && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize history sidebar"
+                onMouseDown={handleSidebarResizeStart}
+                className="absolute top-0 -right-1 h-full w-2 cursor-col-resize z-20 hidden md:block"
+              />
+            )}
+          </div>
+        )}
 
         <div className="flex-1 flex flex-col min-h-0 relative z-10 isolate bg-background/42 dark:bg-background/32 shadow-[inset_0_0_80px_oklch(0.98_0.02_95_/_0.06)] dark:shadow-[inset_0_0_100px_oklch(0.12_0.04_285_/_0.35)] border-l border-primary/15">
           <header className="border-b border-primary/30 bg-card/40 px-4 md:px-6 py-4 flex items-center justify-between gap-3 shadow-lg shadow-primary/10">
             <div className="flex items-center gap-3">
+              <Button
+                ref={mobileSidebarToggleButtonRef}
+                variant="ghost"
+                size="icon"
+                onClick={() => setSidebarCollapsed((current) => !current)}
+                className="md:hidden text-primary hover:text-accent hover:bg-primary/10 transition-all"
+                aria-label={sidebarCollapsed ? 'Open history sidebar' : 'Close history sidebar'}
+                title={sidebarCollapsed ? 'Open history' : 'Close history'}
+              >
+                <List size={20} weight="bold" />
+              </Button>
               <HolocronGlyph variant="header" />
               <h1 className="font-bold text-[22px] md:text-[28px] tracking-wide text-accent glow-text">
                 HOLOCRON ARCHIVE
@@ -1594,8 +1796,13 @@ function App() {
           </header>
 
           <div className="flex-1 flex flex-col min-h-0">
-            <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
-              <div className="pt-6 pb-32 md:pb-40">
+            <div
+              className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 overscroll-contain"
+              ref={scrollRef}
+              onScroll={updateScrollStickiness}
+              data-ui="chat-scroll-container"
+            >
+              <div className="mx-auto w-full max-w-7xl pt-6 pb-32 md:pb-40 px-4 md:px-6 lg:px-8">
                 {messages.length === 0 && (
                   <div className="flex flex-col items-center justify-center min-h-[min(52vh,420px)] px-6 py-10 text-center relative z-[1]">
                     <h2 className="text-xl font-semibold text-accent mb-3 font-totj-serif">
@@ -1633,7 +1840,13 @@ function App() {
                   </div>
                 )}
 
-                <div className="px-4 md:px-6 space-y-0">
+                <div
+                  className="space-y-0"
+                  role="log"
+                  aria-live="polite"
+                  aria-relevant="additions text"
+                  aria-label="Holocron conversation messages"
+                >
                   {messages.map((message) => (
                     <Message
                       key={message.id}
@@ -1645,10 +1858,27 @@ function App() {
 
                 {activeAgents.length > 0 && <AgentPanel agents={activeAgents} queryType={currentQueryType} />}
               </div>
-            </ScrollArea>
+            </div>
 
-            <div className="flex-shrink-0 border-t border-primary/30 bg-card/70 backdrop-blur-md p-3 md:p-4 shadow-[0_-4px_24px_0_rgba(0,0,0,0.35)]">
-              <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
+            {showJumpToLatest && (
+              <div className="pointer-events-none absolute bottom-28 right-4 md:bottom-32 md:right-6 z-20" data-ui="jump-latest-container">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="pointer-events-auto bg-primary/95 hover:bg-accent text-primary-foreground shadow-lg shadow-primary/35"
+                  onClick={jumpToLatest}
+                  aria-label="Jump to latest message"
+                  title="Jump to latest"
+                  data-ui="jump-latest-button"
+                >
+                  <ArrowDown size={16} weight="bold" className="mr-1" />
+                  Latest
+                </Button>
+              </div>
+            )}
+
+            <div className="flex-shrink-0 border-t border-primary/30 bg-card/70 backdrop-blur-md p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:p-4 shadow-[0_-4px_24px_0_rgba(0,0,0,0.35)]">
+              <form onSubmit={handleSubmit} className="max-w-7xl mx-auto w-full px-4 md:px-6 lg:px-8">
                 <div className="flex gap-2">
                   <Input
                     ref={inputRef}
@@ -1687,6 +1917,15 @@ function App() {
             </div>
           </div>
         </div>
+
+        {isMobileViewport && !sidebarCollapsed && (
+          <button
+            type="button"
+            aria-label="Close history sidebar overlay"
+            className="absolute inset-0 z-20 bg-black/45 md:hidden"
+            onClick={() => setSidebarCollapsed(true)}
+          />
+        )}
       </div>
     </div>
   )

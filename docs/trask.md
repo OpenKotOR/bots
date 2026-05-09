@@ -91,7 +91,15 @@ Trask's answer generation is pinned to these approved sources by default:
 | `mdlops-repo` | MDLOps | github | Model conversion tooling |
 | `pykotor-repo` | PyKotor | github | Python KOTOR library |
 | `kotorjs-repo` | kotor.js | github | JS KOTOR tooling |
+| `xoreos-repo` | xoreos | github | Odyssey/Aurora engine implementation |
+| `xoreos-tools-repo` | xoreos-tools | github | Odyssey/Aurora format tooling |
+| `kotorblender-repo` | KotORBlender | github | Blender model tooling |
+| `kotormax-repo` | KOTORMax | github | 3ds Max model tooling |
+| `mdledit-repo` | MDLEdit | github | Model editor/conversion tooling |
+| `tga2tpc-repo` | TGA2TPC | github | Texture conversion tooling |
 | `approved-discord-knowledge` | Approved Discord | discord | Opt-in guild channel index |
+
+Live research is constrained to the approved base hosts `lucasforumsarchive.org`, `deadlystream.com`, `github.com`, `kotor.neocities.org`, and `pcgamingwiki.com`. GitHub crawling is further narrowed to the approved KotOR project roots in this catalog. The headless bridge passes both `query_domains` and `allowed_url_prefixes`, rejects direct or discovered URLs outside that allowlist before scraping, and reports accepted/rejected URL lists in `research_information` for audit.
 
 ## Admin Setup
 
@@ -269,7 +277,7 @@ Point both processes at the same JSON store: set **`TRASK_HTTP_DATA_DIR`** on `t
 
 ## Holocron Web UI (`apps/holocron-web`)
 
-- **Default:** questions go to `/api/trask/ask` (relative URL). Vite dev proxies `/api/trask` → `TRASK_HTTP_PROXY_TARGET` (default `http://127.0.0.1:4010`).
+- **Default:** questions go to `/api/trask/ask` (relative URL). Vite dev proxies `/api/trask` → `TRASK_HTTP_PROXY_TARGET` (default `http://127.0.0.1:4010`). The usual Holocron dev URL is `http://localhost:5174`; the Trask HTTP server also permits `5173`, `4174`, `4173`, and `3000` for local browser/proxy testing.
 - **Env:** `VITE_TRASK_API_BASE` (optional absolute API origin), `VITE_TRASK_API_KEY` (optional build-time bearer), `VITE_TRASK_LEGACY_SPARK=1` to restore the old Spark + simulated multi-agent path.
 
 ```bash

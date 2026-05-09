@@ -1,7 +1,13 @@
 import OpenAI from "openai";
 
 import { loadSharedAiConfig, type ResearchWizardRuntimeConfig, type SharedAiConfig } from "@openkotor/config";
-import { traskApprovedResearchSources, type SourceDescriptor } from "@openkotor/retrieval";
+import {
+  isTraskApprovedBaseUrl,
+  isTraskApprovedResearchUrl,
+  traskApprovedResearchBaseHosts,
+  traskApprovedResearchSources,
+  type SourceDescriptor,
+} from "@openkotor/retrieval";
 
 import {
   listHeadlessGptResearcherModels,
@@ -29,6 +35,15 @@ export interface ResearchWizardProgressEvent {
 export interface ResearchWizardQueryOptions {
   /** Preferred ai-researchwizard model id, e.g. `openrouter:openrouter/auto` or `litellm:moonshotai/kimi-k2`. */
   model?: string;
+  /** Optional per-request source enablement and weight hints from Holocron's Source Prioritization dialog. */
+  sourcePreferences?: readonly ResearchWizardSourcePreference[];
+}
+
+export interface ResearchWizardSourcePreference {
+  name?: string;
+  url: string;
+  weight: number;
+  enabled: boolean;
 }
 
 export interface ResearchWizardModelOption extends HeadlessAiResearchWizardModelOption {}
@@ -45,7 +60,6 @@ export interface ResearchWizardQueryHandler {
 
 const DEFAULT_RESEARCH_WIZARD_MODELS: readonly ResearchWizardModelOption[] = [
   { id: "auto", label: "Auto", provider: "ResearchWizard fallback", recommended: true },
-  { id: "openrouter:openrouter/auto", label: "OpenRouter Auto", provider: "OpenRouter", recommended: true },
 ];
 
 interface ResearchWizardResponsePayload {
@@ -53,6 +67,9 @@ interface ResearchWizardResponsePayload {
   research_information?: {
     source_urls?: readonly string[] | null;
     visited_urls?: readonly string[] | null;
+    query_domains?: readonly string[] | null;
+    allowed_url_prefixes?: readonly string[] | null;
+    rejected_source_urls?: readonly string[] | null;
   };
 }
 
@@ -117,7 +134,10 @@ const uniqueUrlsPreserveOrder = (urls: readonly string[]): string[] => {
 };
 
 /** Visited / cited URLs from ai-researchwizard payload (Holocron live facet pings). */
-const collectVisitedUrlsFromPayload = (payload: ResearchWizardResponsePayload): string[] => {
+const collectVisitedUrlsFromPayload = (
+  payload: ResearchWizardResponsePayload,
+  approvedSources: readonly SourceDescriptor[],
+): string[] => {
   const info = payload.research_information;
   const rawVisited =
     (Array.isArray(info?.visited_urls) ? info.visited_urls : []).filter(
@@ -125,7 +145,16 @@ const collectVisitedUrlsFromPayload = (payload: ResearchWizardResponsePayload): 
     );
   const rawSources =
     (Array.isArray(info?.source_urls) ? info.source_urls : []).filter((value): value is string => typeof value === "string");
-  return uniqueUrlsPreserveOrder([...rawVisited, ...rawSources]);
+  return uniqueUrlsPreserveOrder([...rawVisited, ...rawSources]).filter((url) =>
+    isTraskApprovedResearchUrl(url, approvedSources),
+  );
+};
+
+const collectRejectedUrlsFromPayload = (payload: ResearchWizardResponsePayload): string[] => {
+  const rawRejected = payload.research_information?.rejected_source_urls;
+  return Array.isArray(rawRejected)
+    ? uniqueUrlsPreserveOrder(rawRejected.filter((value): value is string => typeof value === "string"))
+    : [];
 };
 
 const MAX_ARCHIVE_PROBE_EVENTS = 28;
@@ -137,7 +166,7 @@ const emitArchiveProbeEvents = (
 ): void => {
   if (!onProgress) return;
 
-  const urls = collectVisitedUrlsFromPayload(payload).slice(0, MAX_ARCHIVE_PROBE_EVENTS * 2);
+  const urls = collectVisitedUrlsFromPayload(payload, approvedSources).slice(0, MAX_ARCHIVE_PROBE_EVENTS * 2);
 
   let emitted = 0;
   for (const url of urls) {
@@ -192,7 +221,7 @@ const collectRelevantSources = (
       .filter((value): value is string => typeof value === "string")),
     ...((Array.isArray(payload.research_information?.visited_urls) ? payload.research_information.visited_urls : [])
       .filter((value): value is string => typeof value === "string")),
-  ];
+  ].filter((url) => isTraskApprovedResearchUrl(url, approvedSources));
 
   const matched: SourceDescriptor[] = [];
 
@@ -337,12 +366,76 @@ const fallbackDiscordBrief = (report: string, sources: readonly SourceDescriptor
   return `${summary}\n\n${formatSourcesSection(sources)}`;
 };
 
-const degradedAnswerFallback = (query: string, approvedSources: readonly SourceDescriptor[]): string => {
-  const curated = approvedSources.slice(0, 3);
-  const lead =
-    `I could not complete live archive synthesis for this question right now, but here is the fastest next step: ` +
-    `open one of the vetted sources below and search for: "${query.trim()}".`;
-  return `${lead}\n\n${formatSourcesSection(curated)}`;
+const degradedAnswerFallback = (_query: string, _approvedSources: readonly SourceDescriptor[]): string => {
+  return "I could not complete live archive synthesis for this question right now.";
+};
+
+const normalizePreferenceUrl = (url: string): URL | undefined => {
+  try {
+    return new URL(url.trim().replace(/\/+$/, ""));
+  } catch {
+    return undefined;
+  }
+};
+
+const preferenceMatchesSource = (preference: ResearchWizardSourcePreference, source: SourceDescriptor): boolean => {
+  const preferenceUrl = normalizePreferenceUrl(preference.url);
+  const sourceUrl = normalizePreferenceUrl(source.homeUrl);
+
+  if (preferenceUrl && sourceUrl) {
+    const preferenceHost = preferenceUrl.hostname.replace(/^www\./, "").toLowerCase();
+    const sourceHost = sourceUrl.hostname.replace(/^www\./, "").toLowerCase();
+    const preferencePath = preferenceUrl.pathname.replace(/\/+$/, "");
+    const sourcePath = sourceUrl.pathname.replace(/\/+$/, "");
+
+    if (preferenceHost === sourceHost && (preferencePath === "" || sourcePath === preferencePath || sourcePath.startsWith(`${preferencePath}/`))) {
+      return true;
+    }
+
+    if (preferenceHost === sourceHost && preferenceUrl.pathname === "/") {
+      return true;
+    }
+  }
+
+  const preferenceName = preference.name?.trim().toLowerCase();
+  return Boolean(preferenceName && preferenceName === source.name.trim().toLowerCase());
+};
+
+const applySourcePreferences = (
+  approvedSources: readonly SourceDescriptor[],
+  preferences?: readonly ResearchWizardSourcePreference[],
+): readonly SourceDescriptor[] => {
+  if (!preferences?.length) return approvedSources;
+
+  const ranked = approvedSources
+    .map((source, index) => {
+      const preference = preferences.find((entry) => preferenceMatchesSource(entry, source));
+      return {
+        source,
+        index,
+        enabled: preference ? preference.enabled : true,
+        weight: preference && Number.isFinite(preference.weight) ? preference.weight : 1,
+      };
+    })
+    .filter((entry) => entry.enabled)
+    .sort((left, right) => right.weight - left.weight || left.index - right.index)
+    .map((entry) => entry.source);
+
+  return ranked;
+};
+
+const researchDomainsForSources = (sources: readonly SourceDescriptor[]): string[] => {
+  const enabledHosts = new Set<string>();
+  for (const source of sources) {
+    try {
+      const host = new URL(source.homeUrl).hostname.replace(/^www\./, "").toLowerCase();
+      const baseHost = traskApprovedResearchBaseHosts.find((base) => host === base || host.endsWith(`.${base}`));
+      if (baseHost) enabledHosts.add(baseHost);
+    } catch {
+      continue;
+    }
+  }
+  return [...enabledHosts];
 };
 
 const HEARTBEAT_MS = 3500;
@@ -545,18 +638,19 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
   private async fetchResearchReport(
     query: string,
     customPrompt: string,
+    approvedSources: readonly SourceDescriptor[],
     options?: ResearchWizardQueryOptions,
   ): Promise<{ report: string; payload: ResearchWizardResponsePayload }> {
-    const strictSourceUrlMode = process.env.TRASK_RESEARCH_STRICT_SOURCE_URLS === "1";
-    const strictQueryDomainMode = process.env.TRASK_RESEARCH_STRICT_QUERY_DOMAINS === "1";
+    if (approvedSources.length === 0) {
+      throw new Error("No approved research sources are enabled.");
+    }
+
+    const allowedDomains = researchDomainsForSources(approvedSources);
     const raw = await runHeadlessGptResearcher(this.config, {
       query: buildResearchTask(query),
       custom_prompt: customPrompt,
-      // Domain constraints keep retrieval bounded while avoiding expensive full-homepage seeding each query.
-      ...(strictSourceUrlMode ? { source_urls: this.approvedSources.map((source) => source.homeUrl) } : {}),
-      ...(strictQueryDomainMode
-        ? { query_domains: this.approvedSources.map((source) => new URL(source.homeUrl).hostname) }
-        : {}),
+      query_domains: allowedDomains,
+      allowed_url_prefixes: approvedSources.map((source) => source.homeUrl),
       ...(options?.model?.trim() ? { model: options.model.trim() } : {}),
       report_type: "research_report",
       report_source: "web",
@@ -583,26 +677,35 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     onProgress?: (event: ResearchWizardProgressEvent) => void,
     options?: ResearchWizardQueryOptions,
   ): Promise<ResearchWizardAnswer> {
+    const approvedSources = applySourcePreferences(this.approvedSources, options?.sourcePreferences);
     try {
+      const allowedDomains = researchDomainsForSources(approvedSources);
       onProgress?.({
         phase: "gather",
-        detail: "Scanning approved archives and open-web context…",
+        detail: `Scanning ${approvedSources.length} approved source root${approvedSources.length === 1 ? "" : "s"} across ${allowedDomains.length} host${allowedDomains.length === 1 ? "" : "s"}…`,
       });
       const { report, payload } = await withProgressHeartbeat(
         "gather",
         (elapsedMs) => {
           const seconds = Math.max(1, Math.floor(elapsedMs / 1000));
-          return `Scanning approved archives and open-web context… (${seconds}s)`;
+          return `Scanning approved source allowlist… (${seconds}s)`;
         },
         onProgress,
-        async () => await this.fetchResearchReport(query, buildCustomPrompt(), options),
+        async () => await this.fetchResearchReport(query, buildCustomPrompt(), approvedSources, options),
       );
-      emitArchiveProbeEvents(payload, this.approvedSources, onProgress);
+      const rejectedUrls = collectRejectedUrlsFromPayload(payload);
+      if (rejectedUrls.length > 0) {
+        onProgress?.({
+          phase: "gather",
+          detail: `Rejected ${rejectedUrls.length} URL${rejectedUrls.length === 1 ? "" : "s"} outside approved source roots.`,
+        });
+      }
+      emitArchiveProbeEvents(payload, approvedSources, onProgress);
       onProgress?.({
         phase: "report",
         detail: "Ranking passages and citations…",
       });
-      const relevantSources = collectRelevantSources(report, this.approvedSources, payload);
+      const relevantSources = collectRelevantSources(report, approvedSources, payload);
       onProgress?.({
         phase: "sources",
         detail: relevantSources.length ? `${relevantSources.length} sources matched` : "Mapping hosts to archive catalog…",
@@ -619,7 +722,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
         approvedSources: relevantSources,
       };
     } catch {
-      const curatedSources = this.approvedSources.slice(0, 3);
+      const curatedSources = approvedSources.slice(0, 3);
       onProgress?.({
         phase: "sources",
         detail: "Live synthesis unavailable; returning vetted quick-path sources…",
@@ -630,7 +733,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
         detail: "Rendering fallback Holocron answer…",
       });
       return {
-        answer: degradedAnswerFallback(query, this.approvedSources),
+        answer: degradedAnswerFallback(query, approvedSources),
         approvedSources: curatedSources,
       };
     }
@@ -638,7 +741,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
 
   /** Shorter rewrite for proactive/channel replies (still source-backed). */
   public async answerQuestionBrief(query: string): Promise<ResearchWizardBriefAnswer> {
-    const { report, payload } = await this.fetchResearchReport(query, buildCustomPromptBrief());
+    const { report, payload } = await this.fetchResearchReport(query, buildCustomPromptBrief(), this.approvedSources);
     const relevantSources = collectRelevantSources(report, this.approvedSources, payload);
     const answer = await this.rewriteForDiscordBrief(query, report, relevantSources);
 

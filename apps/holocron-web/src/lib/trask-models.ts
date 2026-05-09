@@ -7,57 +7,21 @@ export type TraskModelOption = {
   recommended?: boolean
 }
 
-export const TRASK_MODEL_OPTIONS: readonly TraskModelOption[] = [
-  {
-    id: TRASK_MODEL_AUTO,
-    label: 'Auto',
-    provider: 'ResearchWizard fallback',
-    recommended: true,
-  },
-  {
-    id: 'openrouter:openrouter/auto',
-    label: 'OpenRouter Auto',
-    provider: 'OpenRouter',
-    recommended: true,
-  },
-  {
-    id: 'litellm:moonshotai/kimi-k2',
-    label: 'Kimi K2',
-    provider: 'Moonshot AI',
-  },
-  {
-    id: 'openrouter:anthropic/claude-opus-4.1',
-    label: 'Claude Opus',
-    provider: 'Anthropic',
-  },
-  {
-    id: 'openrouter:openai/gpt-5',
-    label: 'GPT-5',
-    provider: 'OpenAI',
-  },
-  {
-    id: 'openrouter:minimax/minimax-m1',
-    label: 'MiniMax M1',
-    provider: 'MiniMax',
-  },
-  {
-    id: 'openrouter:z-ai/glm-4.5',
-    label: 'GLM 4.5',
-    provider: 'Z.AI',
-  },
-  {
-    id: 'openrouter:deepseek/deepseek-chat',
-    label: 'DeepSeek Chat',
-    provider: 'DeepSeek',
-  },
-]
+const AUTO_TRASK_MODEL_OPTION: TraskModelOption = {
+  id: TRASK_MODEL_AUTO,
+  label: 'Auto',
+  provider: 'ResearchWizard fallback',
+  recommended: true,
+}
+
+export const TRASK_MODEL_OPTIONS: readonly TraskModelOption[] = [AUTO_TRASK_MODEL_OPTION]
 
 const MODEL_ID_RE = /^[a-z0-9][a-z0-9._:/@+-]{0,159}$/iu
 
 export function mergeTraskModelOptions(dynamicOptions: readonly TraskModelOption[]): readonly TraskModelOption[] {
   const seen = new Set<string>()
   const merged: TraskModelOption[] = []
-  for (const option of [...TRASK_MODEL_OPTIONS, ...dynamicOptions]) {
+  for (const option of [AUTO_TRASK_MODEL_OPTION, ...dynamicOptions]) {
     const id = option.id.trim()
     if (!id || seen.has(id) || !MODEL_ID_RE.test(id)) continue
     seen.add(id)

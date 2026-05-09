@@ -30,7 +30,20 @@ import { startEmbeddedTraskWebUi } from "./web-server.js";
 const logger = createLogger("trask-bot");
 const config = loadTraskBotConfig();
 const searchProvider = createDefaultSearchProvider({ stateDir: config.chunkDir });
-const researchWizard = createResearchWizardClient(config.researchWizard);
+const DISCORD_ASK_MIN_TIMEOUT_MS = 420_000;
+const DISCORD_ASK_RESPONSE_SLA_MS = 50_000;
+const DISCORD_ASK_SYNTHESIS_FAILURE_MESSAGE = "I could not complete live archive synthesis for this question right now.";
+const researchWizardTimeoutMs = Math.max(config.researchWizard.timeoutMs, DISCORD_ASK_MIN_TIMEOUT_MS);
+if (researchWizardTimeoutMs !== config.researchWizard.timeoutMs) {
+  logger.warn("TRASK_RESEARCHWIZARD_TIMEOUT_MS is low for Discord /ask; elevating at runtime.", {
+    configuredTimeoutMs: config.researchWizard.timeoutMs,
+    effectiveTimeoutMs: researchWizardTimeoutMs,
+  });
+}
+const researchWizard = createResearchWizardClient({
+  ...config.researchWizard,
+  timeoutMs: researchWizardTimeoutMs,
+});
 const queryRepository = new JsonTraskQueryRepository(resolveDataFile(config.queryDataDir, "trask-queries.json"));
 
 const traskHttpRuntime = {
@@ -107,24 +120,40 @@ const reindexCommand = new SlashCommandBuilder()
 const commands = [askCommand, sourcesCommand, reindexCommand] as const;
 
 const AUTOCOMPLETE_VALUE_CAP = 100;
+const AUTOCOMPLETE_MAX_CHOICES = 25;
+const AUTOCOMPLETE_MAX_RECENT_PER_USER = 60;
+const recentQueriesByUser = new Map<string, string[]>();
+
+const rememberRecentQuery = (userId: string, query: string): void => {
+  const text = query.trim().replace(/\s+/g, " ");
+  if (text.length < 3) {
+    return;
+  }
+
+  const current = recentQueriesByUser.get(userId) ?? [];
+  const deduped = [text, ...current.filter((entry) => entry.toLowerCase() !== text.toLowerCase())].slice(
+    0,
+    AUTOCOMPLETE_MAX_RECENT_PER_USER,
+  );
+  recentQueriesByUser.set(userId, deduped);
+};
 
 const buildAskAutocompleteChoices = async (
   userId: string,
   needle: string,
 ): Promise<{ name: string; value: string }[]> => {
-  const recent = await queryRepository.listForUser(userId, 60);
   const uniq: string[] = [];
   const seen = new Set<string>();
   const n = needle.trim().toLowerCase();
-  for (const row of recent) {
-    const text = row.query.trim().replace(/\s+/g, " ");
+  const recent = recentQueriesByUser.get(userId) ?? [];
+  for (const text of recent) {
     if (text.length < 3) continue;
     const key = text.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     if (n && !key.includes(n)) continue;
     uniq.push(text);
-    if (uniq.length >= 25) break;
+    if (uniq.length >= AUTOCOMPLETE_MAX_CHOICES) break;
   }
   return uniq.map((text) => {
     const clipped = text.length > AUTOCOMPLETE_VALUE_CAP ? `${text.slice(0, AUTOCOMPLETE_VALUE_CAP - 1)}…` : text;
@@ -201,9 +230,11 @@ const buildFallbackSources = (sources: readonly SourceDescriptor[]): APIEmbedFie
 const buildResearchEmbed = (rawAnswer: string, approvedSources: readonly SourceDescriptor[]) => {
   const { body, sourceLines } = splitResearchAnswer(rawAnswer);
   const description = truncateForDiscord(body, 4000);
-  const sourceFields = sourceLines.length > 0
-    ? chunkSourceLines(sourceLines)
-    : buildFallbackSources(approvedSources);
+  const sourceFields = description === DISCORD_ASK_SYNTHESIS_FAILURE_MESSAGE
+    ? []
+    : sourceLines.length > 0
+      ? chunkSourceLines(sourceLines)
+      : buildFallbackSources(approvedSources);
 
   return buildInfoEmbed({
     title: `${personaProfiles.trask.displayName} Briefing`,
@@ -212,18 +243,145 @@ const buildResearchEmbed = (rawAnswer: string, approvedSources: readonly SourceD
   });
 };
 
+type ChatReplyPayload = Parameters<ChatInputCommandInteraction["reply"]>[0];
+
+const isUnknownInteractionError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as { code?: unknown };
+  return candidate.code === 10062;
+};
+
+const safeReply = async (interaction: ChatInputCommandInteraction, payload: ChatReplyPayload): Promise<void> => {
+  try {
+    if (interaction.deferred || interaction.replied) {
+      await interaction.followUp(payload);
+      return;
+    }
+
+    await interaction.reply(payload);
+  } catch (error) {
+    if (isUnknownInteractionError(error)) {
+      logger.warn("Skipping reply for stale Discord interaction.", {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
+      return;
+    }
+    throw error;
+  }
+};
+
+const ensureAskDeferred = async (interaction: ChatInputCommandInteraction): Promise<boolean> => {
+  if (interaction.deferred || interaction.replied) {
+    return true;
+  }
+
+  try {
+    await interaction.deferReply();
+    return true;
+  } catch (error) {
+    if (isUnknownInteractionError(error)) {
+      logger.warn("Discord reported stale interaction before deferReply; skipping command execution.", {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
+      return false;
+    }
+
+    logger.warn("Trask /ask deferReply failed; retrying with ephemeral response.", {
+      error: toErrorMessage(error),
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
+  }
+
+  if (interaction.deferred || interaction.replied) {
+    return true;
+  }
+
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    return true;
+  } catch (error) {
+    if (isUnknownInteractionError(error)) {
+      logger.warn("Discord reported stale interaction during deferReply fallback; skipping command execution.", {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
+      return false;
+    }
+    throw error;
+  }
+};
+
 const handleAskCommand = async (interaction: ChatInputCommandInteraction): Promise<void> => {
   const query = interaction.options.getString("query", true);
+  rememberRecentQuery(interaction.user.id, query);
   const threadOpt = interaction.options.getString("thread")?.trim();
   const threadId = threadOpt && isTraskThreadId(threadOpt) ? threadOpt : randomUUID();
 
-  await interaction.deferReply();
+  const deferred = await ensureAskDeferred(interaction);
+  if (!deferred) {
+    return;
+  }
 
   const queryId = randomUUID();
   const createdAt = new Date().toISOString();
 
   try {
-    const result = await researchWizard.answerQuestion(query);
+    const answerPromise = researchWizard.answerQuestion(query);
+    const timedResult = await Promise.race<
+      { kind: "result"; value: Awaited<ReturnType<typeof researchWizard.answerQuestion>> }
+      | { kind: "timeout" }
+    >([
+      answerPromise.then((value) => ({ kind: "result", value })),
+      new Promise((resolve) => {
+        setTimeout(() => resolve({ kind: "timeout" as const }), DISCORD_ASK_RESPONSE_SLA_MS);
+      }),
+    ]);
+
+    if (timedResult.kind === "timeout") {
+      // Prevent unhandled rejections if the research promise fails after timeout.
+      void answerPromise.catch(() => undefined);
+
+      const completedAt = new Date().toISOString();
+      const timeoutMessage = `Live archive synthesis exceeded ${Math.floor(DISCORD_ASK_RESPONSE_SLA_MS / 1000)}s.`;
+      await queryRepository.append({
+        queryId,
+        threadId,
+        userId: interaction.user.id,
+        query,
+        status: "failed",
+        answer: null,
+        sources: [],
+        error: timeoutMessage,
+        createdAt,
+        completedAt,
+      });
+
+      logger.warn("Trask /ask hit Discord response SLA timeout.", {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        queryId,
+        timeoutMs: DISCORD_ASK_RESPONSE_SLA_MS,
+      });
+
+      const fallbackEmbed = buildInfoEmbed({
+        title: `${personaProfiles.trask.displayName} Briefing`,
+        description: DISCORD_ASK_SYNTHESIS_FAILURE_MESSAGE,
+      });
+
+      await interaction.editReply({
+        embeds: [fallbackEmbed],
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const result = timedResult.value;
     const completedAt = new Date().toISOString();
     await queryRepository.append({
       queryId,
@@ -341,7 +499,7 @@ const dispatchChatCommand = async (interaction: ChatInputCommandInteraction): Pr
       await handleReindexCommand(interaction);
       break;
     default:
-      await interaction.reply({
+      await safeReply(interaction, {
         embeds: [
           buildErrorEmbed({
             title: "Unknown Command",
@@ -374,6 +532,12 @@ if (config.proactive.enabled && !proactiveRuntimeReady) {
 if (proactiveRuntimeReady) {
   registerTraskProactiveHandlers(client, config, researchWizard, logger, queryRepository);
 }
+
+client.on("error", (error) => {
+  logger.error("Discord client emitted an error.", {
+    error: toErrorMessage(error),
+  });
+});
 
 client.once("ready", (readyClient) => {
   logger.info("Trask is online.", {
@@ -417,7 +581,7 @@ client.on("interactionCreate", async (interaction) => {
   }
 
   if (!isAllowedGuild(interaction.guildId)) {
-    await interaction.reply({
+    await safeReply(interaction, {
       embeds: [
         buildErrorEmbed({
           title: "Not Available Here",
@@ -431,7 +595,7 @@ client.on("interactionCreate", async (interaction) => {
 
   // Channel restriction only applies to /ask (the content-producing command).
   if (interaction.commandName === "ask" && !isAllowedChannel(interaction.channelId)) {
-    await interaction.reply({
+    await safeReply(interaction, {
       embeds: [
         buildErrorEmbed({
           title: "Wrong Channel",
@@ -463,7 +627,7 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    await interaction.reply(payload);
+    await safeReply(interaction, payload);
   }
 });
 
@@ -482,12 +646,22 @@ const resolveSlashGuildTargets = (): string[] => {
 const deployables = commands.map((command) => command.toJSON() as RESTPostAPIApplicationCommandsJSONBody);
 const slashGuildTargets = resolveSlashGuildTargets();
 
-if (slashGuildTargets.length > 0) {
-  for (const guildId of slashGuildTargets) {
-    await deployGuildCommands({ ...config.discord, guildId }, deployables, logger);
+const deploySlashCommands = async (): Promise<void> => {
+  if (slashGuildTargets.length > 0) {
+    for (const guildId of slashGuildTargets) {
+      await deployGuildCommands({ ...config.discord, guildId }, deployables, logger);
+    }
+    return;
   }
-} else {
+
   await deployGlobalCommands(config.discord, deployables, logger);
-}
+};
 
 await client.login(config.discord.botToken);
+
+void deploySlashCommands().catch((error) => {
+  logger.error("Failed to deploy slash commands during startup.", {
+    error: toErrorMessage(error),
+    slashGuildTargets,
+  });
+});

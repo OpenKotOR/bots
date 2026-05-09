@@ -127,7 +127,7 @@ app.use(express.json());
 
 const allowedCorsOrigins = buildBrowserCorsAllowedOrigins({
   publicWebOrigin: config.publicWebOrigin,
-  localPorts: [5173, 4173, 3000],
+  localPorts: [5174, 5173, 4174, 4173, 3000],
 });
 
 app.use((req, res, next) => {
