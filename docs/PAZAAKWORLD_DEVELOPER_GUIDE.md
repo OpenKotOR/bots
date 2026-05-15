@@ -2,28 +2,36 @@
 
 ## Using the New Components
 
-### 1. Sound Effects
+### 1. Sound Effects and ambient music
+
+**Global SFX** (beeps, card sounds) use `soundManager` from `./utils/soundManager.ts`. Multi-hit cues are
+scheduled on the **Web Audio clock** (`AudioContext.currentTime`), not `setTimeout` alone.
+
+**Ambient table music** (local practice cantina drone) uses `./utils/ambientAudio.ts` — call
+`startAmbientMusic()` for a handle that **must** be torn down to release the `AudioContext`.
+
+All browser persistence for sound lives in `./utils/soundUserPrefs.ts` (canonical JSON under
+`openkotor-pazaak-world-sound-v2`, with one-time migration from older keys).
 
 ```typescript
 import { soundManager } from "./utils/soundManager.ts";
 
-// Play sound effects
-soundManager.beep("success", 150);  // High pitched beep
-soundManager.beep("error", 200);    // Low pitched beep
-soundManager.playCardSound();        // Card play sound
-soundManager.playDrawSound();        // Draw sound
-soundManager.playRoundWinSound();    // Two ascending beeps
-soundManager.playBustSound();        // Three descending beeps
-soundManager.playErrorSound();       // Auth error beep
+soundManager.beep("success", 150);
+soundManager.playCardSound();
+soundManager.playDrawSound();
+soundManager.playRoundWinSound();
+soundManager.playBustSound();
+soundManager.playErrorSound();
 
-// Control sound
 soundManager.setEnabled(true);
 soundManager.setMusicVolume(0.5);
 soundManager.setEffectsVolume(0.7);
 
-// Start background music
-soundManager.startBackgroundMusic();
-soundManager.stopBackgroundMusic();
+// Ambient loop (separate module — always store the stop handle)
+import { startAmbientMusic } from "./utils/ambientAudio.ts";
+const stop = startAmbientMusic();
+// … later …
+stop();
 ```
 
 ### 2. Animated Text

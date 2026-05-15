@@ -121,6 +121,8 @@ Trask runs **headless ai-researchwizard** from `vendor/ai-researchwizard` (see `
 All bots auto-register guild-scoped commands when their corresponding `*_DISCORD_GUILD_ID` is present.
 You can also set `DISCORD_TARGET_GUILD_ID` once and let all three bots target the same guild by default.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test conventions and PR expectations.
+
 ## Discord Export
 
 The repo now includes a Python CLI for full Discord guild exports at [scripts/export_discord_server.py](c:/GitHub/openkotor-discord-bots/scripts/export_discord_server.py).
