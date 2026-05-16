@@ -36,7 +36,7 @@ jobs:
             echo "::notice::Skipping Fly deploy. Add repo secret FLY_API_TOKEN and variable FLY_INDUCER_APP_NAME (Fly app name)."
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         if: steps.chk.outputs.go == 'true'
 
       - uses: superfly/flyctl-actions/setup-flyctl@v1
