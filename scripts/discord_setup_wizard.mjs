@@ -70,12 +70,31 @@ Where to find them — in YOUR regular browser:
   2. Click the bot application
   3. "General Information" tab  →  copy App ID and Public Key
   4. "Bot" tab  →  click "Reset Token" → confirm → copy the token
+
+NOTE: HK-86 and Pazaak deploy commands guild-scoped.
+You will also be asked for your Discord Server (Guild) ID.
+(Right-click your server icon → "Copy Server ID" with Developer Mode on)
 `);
 
   const answer = await ask(rl, "  Open https://discord.com/developers/applications in your browser now? [Y/n] ");
   if (!answer.trim() || answer.trim().toLowerCase() !== "n") {
     openUrl("https://discord.com/developers/applications");
     console.log("  → Opened in your default browser.\n");
+  }
+
+  // Guild ID — shared across HK-86 and Pazaak
+  console.log("\n" + hr());
+  console.log("  Shared: Discord Server (Guild) ID");
+  console.log(hr());
+  console.log("  HK-86 and Pazaak deploy slash commands guild-scoped.");
+  console.log("  Enable Developer Mode: Discord Settings → Advanced → Developer Mode");
+  console.log("  Then: right-click your server icon → Copy Server ID\n");
+  let guildId = "";
+  while (true) {
+    const raw = (await ask(rl, "  Guild / Server ID (17-20 digits, or Enter to skip): ")).trim();
+    if (!raw) break;
+    if (validateSnowflake(raw)) { guildId = raw; break; }
+    console.log("  ⚠  Must be 17–20 digits. Try again.");
   }
 
   const envParts = {};
@@ -126,6 +145,8 @@ Where to find them — in YOUR regular browser:
 
   // Build snippet
   const lines = ["\n# ── Discord Bot Credentials ──────────────────────────"];
+  if (guildId) lines.push(`DISCORD_TARGET_GUILD_ID=${guildId}`);
+  lines.push("");
   for (const [prefix, val] of Object.entries(envParts)) {
     if (val.appId)  lines.push(`${prefix}_DISCORD_APP_ID=${val.appId}`);
     if (val.pubKey) lines.push(`${prefix}_DISCORD_PUBLIC_KEY=${val.pubKey}`);
@@ -143,7 +164,7 @@ Where to find them — in YOUR regular browser:
     // Remove any existing DISCORD entries to avoid duplicates
     const stripped = existing
       .split("\n")
-      .filter(l => !l.match(/^(TRASK|HK|PAZAAK)_DISCORD_(APP_ID|PUBLIC_KEY|BOT_TOKEN)=/))
+      .filter(l => !l.match(/^(DISCORD_TARGET_GUILD_ID|(TRASK|HK|PAZAAK)_DISCORD_(APP_ID|PUBLIC_KEY|BOT_TOKEN))=/))
       .join("\n");
     writeFileSync(envPath, stripped.trimEnd() + snippet);
     console.log(`✅  Written to ${envPath}`);
@@ -151,12 +172,29 @@ Where to find them — in YOUR regular browser:
     console.log(`Run with --write to save automatically, or add the above to ${envPath}`);
   }
 
+  // HK-86 reaction-role panels setup hint
+  const panelsSrc = resolve(repoRoot, "apps/hk-bot/data-templates/reaction-role-panels.example.json");
+  const panelsDst = resolve(repoRoot, "data/hk-bot/reaction-role-panels.json");
+  const { existsSync: exists } = await import("node:fs");
+  const { mkdirSync } = await import("node:fs");
+  if (!exists(panelsDst)) {
+    mkdirSync(resolve(repoRoot, "data/hk-bot"), { recursive: true });
+    const { copyFileSync } = await import("node:fs");
+    copyFileSync(panelsSrc, panelsDst);
+    console.log("\n✅  Created data/hk-bot/reaction-role-panels.json from template.");
+    console.log("   Edit it to add your channel ID, message ID, and emoji→role mappings.");
+  }
+
   console.log(`
 Next steps:
-  pnpm dev:trask       # start Trask bot
-  pnpm dev:hk          # start HK-86 bot
-  pnpm dev:pazaak      # start Pazaak bot
+  pnpm dev:trask       # start Trask Q&A bot
+  pnpm dev:hk          # start HK-86 bot (react-for-role)
+  pnpm dev:pazaak      # start Pazaak card game bot
   node scripts/discord_bots_smoke.mjs   # smoke-test command registration
+
+For HK-86 reaction roles:
+  Edit: data/hk-bot/reaction-role-panels.json
+  (fill in channelId, messageId, and emoji/role mappings for your server)
 `);
 }
 

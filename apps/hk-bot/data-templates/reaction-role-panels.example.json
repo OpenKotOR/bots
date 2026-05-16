@@ -1,0 +1,28 @@
+{
+  "_comment": "HK-86 reaction-role configuration. Fill in real channel/message/role IDs from your Discord server.",
+  "version": 1,
+  "defaultAnnounceMode": "reply",
+  "replyCooldownMs": 3000,
+  "panels": [
+    {
+      "_comment": "Example panel: a pinned #roles channel message where users react to get roles.",
+      "channelId": "REPLACE_WITH_CHANNEL_SNOWFLAKE",
+      "messageId": "REPLACE_WITH_MESSAGE_SNOWFLAKE",
+      "announceMode": "reply",
+      "mappings": [
+        {
+          "emoji": "🎮",
+          "roleNameHint": "PC Gamer"
+        },
+        {
+          "emoji": "🕹️",
+          "roleNameHint": "Console Player"
+        },
+        {
+          "emoji": "📚",
+          "roleNameHint": "Lore Enthusiast"
+        }
+      ]
+    }
+  ]
+}
