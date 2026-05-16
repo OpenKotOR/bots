@@ -104,33 +104,75 @@ infra/
 
 ## Getting Started
 
-1. Copy `.env.example` to `.env` and fill the relevant Discord app credentials.
-2. Install dependencies with `corepack pnpm install`.
-3. Build the workspace with `corepack pnpm build`.
-4. Run one bot at a time with one of:
-   - `corepack pnpm dev:trask`
-   - `corepack pnpm dev:trask-http` (REST + optional static `apps/holocron-web` build)
-   - `corepack pnpm dev:hk` (HK guide on the [wiki](https://github.com/OpenKotOR/community-bots/wiki/docs/guides/hk-86); reaction panels use `data/hk-bot/reaction-role-panels.json` — start from `apps/hk-bot/reaction-role-panels.example.json`; `/designations reactions help` in Discord prints setup steps; static Discord bots hub when deployed: https://openkotor.github.io/community-bots/hk86/)
-   - `corepack pnpm dev:pazaak`
-   - `corepack pnpm dev:ingest`
+### Prerequisites
 
-Trask runs **headless ai-researchwizard** from `vendor/ai-researchwizard` (see `TRASK_GPT_RESEARCHER_ROOT` /
-`TRASK_GPT_RESEARCHER_PYTHON`); it does **not** require the FastAPI/Web UI server. The vendored tree lives in
-`vendor/ai-researchwizard` (often as a git submodule).
+- Node.js ≥ 24, pnpm 10.11.0 (`corepack enable && corepack prepare pnpm@10.11.0 --activate`)
+- Python ≥ 3.11 (for the Trask research venv — optional but improves answer quality)
 
-All bots auto-register guild-scoped commands when their corresponding `*_DISCORD_GUILD_ID` is present.
-You can also set `DISCORD_TARGET_GUILD_ID` once and let all three bots target the same guild by default.
+### 1. Install and build
+
+```bash
+pnpm install
+pnpm rebuild esbuild   # required once after clean install
+pnpm build
+```
+
+### 2. Configure Discord credentials
+
+Run the interactive wizard — it opens the Developer Portal in your browser and writes a `.env` file:
+
+```bash
+pnpm discord:setup
+```
+
+You'll need **App ID**, **Public Key**, and **Bot Token** for each bot (Trask, HK-86, Pazaak).
+See [`docs/trask-ops.md`](docs/trask-ops.md) for the full step-by-step guide.
+
+### 3. Bootstrap Trask's research venv (optional — improves Q&A quality)
+
+```bash
+node scripts/trask_ops.mjs setup-venv
+```
+
+Without a venv, Trask returns citation lists. With one (+ an LLM key), it returns synthesized answers.
+
+### 4. Start the bots
+
+```bash
+pnpm dev:trask-http   # Trask Q&A REST server + Holocron web UI  (port 4010)
+pnpm dev:trask        # Trask Discord bot
+pnpm dev:hk           # HK-86 bot (react-for-role, designations)
+pnpm dev:pazaak       # Pazaak card game bot
+```
+
+All bots read credentials from root `.env` (dotenv walks up from `process.cwd()`).
+Guild-scoped command registration fires automatically when `DISCORD_TARGET_GUILD_ID` is set.
+
+### HK-86 reaction roles
+
+After starting the bot, configure `data/hk-bot/reaction-role-panels.json` with your channel and message IDs.
+The template is at `apps/hk-bot/data-templates/reaction-role-panels.example.json`.
+Run `/designations reactions help` in Discord for a pre-filled invite link and setup checklist.
+See [`docs/trask-ops.md`](docs/trask-ops.md#hk-86-reaction-role-setup) for full instructions.
+
+### Verify
+
+```bash
+pnpm verify:trask-web        # Playwright: 5 KOTOR queries → expects RICH responses
+pnpm discord:smoke-bots      # Discord REST: confirm all slash commands are registered
+pnpm test                    # 130 unit tests
+```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test conventions and PR expectations.
 
 ## Discord Export
 
-The repo now includes a Python CLI for full Discord guild exports at [scripts/export_discord_server.py](c:/GitHub/openkotor-discord-bots/scripts/export_discord_server.py).
+The repo includes a Python CLI for full Discord guild exports at [`scripts/export_discord_server.py`](scripts/export_discord_server.py).
 
 Default behavior is intentionally non-interactive and broad: if `.env` contains a valid bot token plus `PAZAAK_DISCORD_GUILD_ID` or `DISCORD_TARGET_GUILD_ID`, running the script with no narrowing flags exports the full visible guild snapshot in one shot.
 
-```powershell
-c:/GitHub/openkotor-discord-bots/.venv/Scripts/python.exe -B scripts/export_discord_server.py --color
+```bash
+python -B scripts/export_discord_server.py --color
 ```
 
 By default the exporter:
@@ -180,19 +222,9 @@ When a guild-level resource exists in the API but is not enabled or not exposed 
 
 Manifest accounting now splits asset references into `container_asset_ref_count` and `guild_asset_ref_count`, with `total_asset_ref_count` including both. This keeps guild-level exports such as member profile media, widget assets, soundboard sounds, and other non-message resources visible in the top-level totals instead of hiding them outside the per-container summaries.
 
-The previous helper name [scripts/export_discord_channel.py](c:/GitHub/openkotor-discord-bots/scripts/export_discord_channel.py) now acts as a compatibility wrapper over the new CLI.
+The previous helper name [`scripts/export_discord_channel.py`](scripts/export_discord_channel.py) now acts as a compatibility wrapper over the new CLI.
 
-Completed OpenKotOR guild export:
-
-- [exports/discord-server-openkotor-739590575359262792-20260416T171425Z/manifest.json](c:/GitHub/openkotor-discord-bots/exports/discord-server-openkotor-739590575359262792-20260416T171425Z/manifest.json)
-- [exports/discord-server-openkotor-739590575359262792-20260416T171425Z/guild.json](c:/GitHub/openkotor-discord-bots/exports/discord-server-openkotor-739590575359262792-20260416T171425Z/guild.json)
-
-Latest verified export with the leveled logger:
-
-- [exports/discord-server-openkotor-739590575359262792-20260416T172407Z/manifest.json](c:/GitHub/openkotor-discord-bots/exports/discord-server-openkotor-739590575359262792-20260416T172407Z/manifest.json)
-- [exports/discord-server-openkotor-739590575359262792-20260416T172407Z/guild.json](c:/GitHub/openkotor-discord-bots/exports/discord-server-openkotor-739590575359262792-20260416T172407Z/guild.json)
-
-That latest live-validated checkpoint completed successfully with `63` exported containers, `12828` messages, `1811` downloaded assets, and `22629` total asset refs split as `22064` container refs plus `565` guild refs. The same completed run also verified the public guild widget surface for OpenKotOR: `widget_channel_count: 2`, `widget_member_count: 72`, `widget_presence_count: 72`, `widget_image_style_count: 5`, downloaded widget image assets for `shield` plus `banner1` through `banner4`, and downloaded widget avatar assets for the exposed widget member list. It also confirmed that `vanity_url` and bot-auth `widget_settings` are permission-blocked for the current bot and are therefore recorded in `optional_resource_errors` rather than silently omitted.
+Export output lands in `exports/discord-server-<guild>-<id>-<timestamp>/` with a `manifest.json`, per-container JSON files, and a deduplicated `assets/` store.
 
 ## Notes
 
