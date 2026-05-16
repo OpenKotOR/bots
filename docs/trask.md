@@ -254,6 +254,11 @@ may not bind** the option—rather than pasting a full pseudo-command string.
 Trask Q&A does **not** require PazaakWorld: run `trask-http-server` + `holocron-web` against the same headless ai-researchwizard
 install on disk (`TRASK_GPT_RESEARCHER_ROOT`).
 
+## Layered knowledgebase
+
+Operator charter, Discord text export/import, welcome tone, source authority, validation ladder, Holocron REST contracts (`/ask`, `/history`, session), Holocron browser client (`VITE_*`), embedded vs standalone HTTP hosts, Pazaak `/api/trask` mount, proactive mode, env variable map, and evidence-label rules live under
+[`docs/knowledgebase/README.md`](knowledgebase/README.md). Use that index when extending ingestion or documenting Trask behavior beyond this file.
+
 ## Standalone HTTP server (`apps/trask-http-server`)
 
 Runs the shared router and optionally serves a built `apps/holocron-web` bundle.

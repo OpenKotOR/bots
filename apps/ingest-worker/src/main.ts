@@ -7,10 +7,13 @@ import {
   FileReindexQueueStore,
   FileChunkStore,
   createDefaultSearchProvider,
+  defaultSourceCatalog,
   type ChunkRecord,
   type SourceDescriptor,
   type SourceIndexRecord,
 } from "@openkotor/retrieval";
+
+import { DISCORD_EXPORT_SOURCE_ID, importDiscordExport } from "./discord-export-import.js";
 
 const logger = createLogger("ingest-worker");
 const config = loadIngestWorkerConfig();
@@ -342,6 +345,30 @@ switch (command ?? "list-sources") {
     break;
   }
 
+  case "import-discord-export": {
+    const dryRun = rest.includes("--dry-run");
+    const exportDir = rest.find((arg) => !arg.startsWith("--"));
+    if (!exportDir) {
+      logger.warn("Missing export directory for import-discord-export.", {
+        usage: "import-discord-export <export-dir> [--dry-run]",
+      });
+      break;
+    }
+    const outcome = await importDiscordExport(exportDir, {
+      dryRun,
+      chunkStore,
+      onWarn: (message, meta) => logger.warn(message, meta ?? {}),
+    });
+    logger.info(`Discord export import ${dryRun ? "dry-run" : "completed"}.`, {
+      dryRun,
+      stateDir: config.stateDir,
+      sourceId: DISCORD_EXPORT_SOURCE_ID,
+      importedChunkCount: outcome.chunkCount,
+      scannedContainerCount: outcome.containerCount,
+    });
+    break;
+  }
+
   default: {
     logger.warn("Unknown ingest-worker command.", {
       received: command,
@@ -353,6 +380,7 @@ switch (command ?? "list-sources") {
         "run-queue-worker [pollMs]",
         "show-indexed",
         "show-config",
+        "import-discord-export <export-dir> [--dry-run]",
       ],
     });
   }

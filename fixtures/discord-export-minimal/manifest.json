@@ -1,0 +1,4 @@
+{
+  "fixture": true,
+  "description": "Minimal tree for `import-discord-export` tests and documentation only — not a real guild export."
+}

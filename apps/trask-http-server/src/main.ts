@@ -10,7 +10,7 @@ import {
   createNodeApiHost,
   resolveCorsHeaders,
 } from "@openkotor/platform";
-import { createDefaultSearchProvider } from "@openkotor/retrieval";
+import { createChunkSearchProvider } from "@openkotor/retrieval";
 import { createResearchWizardClient } from "@openkotor/trask";
 import { createTraskHttpRouter, type TraskHttpAuth } from "@openkotor/trask-http";
 import express, { type Request, type Response } from "express";
@@ -54,8 +54,8 @@ const createWebAuth = (config: ReturnType<typeof loadTraskHttpServerConfig>): Tr
 const config = loadTraskHttpServerConfig();
 
 const queryRepository = new JsonTraskQueryRepository(resolveDataFile(config.dataDir, "trask-queries.json"));
-const searchProvider = createDefaultSearchProvider({ stateDir: config.chunkDir });
-const researchWizard = createResearchWizardClient(config.researchWizard, config.ai);
+const searchProvider = createChunkSearchProvider(config.chunkDir);
+const researchWizard = createResearchWizardClient(config.researchWizard, config.ai, searchProvider);
 
 const runtime = {
   searchProvider,

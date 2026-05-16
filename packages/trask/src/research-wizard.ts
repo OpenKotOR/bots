@@ -4,6 +4,8 @@ import { loadSharedAiConfig, type ResearchWizardRuntimeConfig, type SharedAiConf
 import {
   isTraskApprovedBaseUrl,
   isTraskApprovedResearchUrl,
+  type SearchHit,
+  type SearchProvider,
   traskApprovedResearchBaseHosts,
   traskApprovedResearchSources,
   type SourceDescriptor,
@@ -501,6 +503,45 @@ const applySourcePreferences = (
   return ranked;
 };
 
+interface LocalKnowledgeContext {
+  digest: string;
+  sources: readonly SourceDescriptor[];
+}
+
+const searchHitToSource = (hit: SearchHit): SourceDescriptor => {
+  return {
+    id: `${hit.sourceId}:${normalizeUrl(hit.url)}`,
+    name: `${hit.sourceName}: ${hit.title}`,
+    kind: hit.kind,
+    homeUrl: hit.url,
+    description: hit.snippet,
+    freshnessPolicy: "imported knowledge snapshot",
+    approvalScope: "local indexed archive",
+    tags: hit.tags,
+  };
+};
+
+const mergeSourcesPreserveOrder = (...groups: readonly (readonly SourceDescriptor[])[]): SourceDescriptor[] => {
+  const merged: SourceDescriptor[] = [];
+  const seen = new Set<string>();
+  for (const group of groups) {
+    for (const source of group) {
+      const key = normalizeUrl(source.homeUrl);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(source);
+    }
+  }
+  return merged;
+};
+
+const localKnowledgeFallbackAnswer = (query: string, local: LocalKnowledgeContext): string => {
+  const header = `I could not complete live archive synthesis for "${query.trim()}", but I found related local knowledge.`;
+  const summary = local.digest.trim();
+  const sources = formatSourcesSection(local.sources);
+  return `${header}\n\n${summary}\n\n${sources}`;
+};
+
 const researchDomainsForSources = (sources: readonly SourceDescriptor[]): string[] => {
   const enabledHosts = new Set<string>();
   for (const source of sources) {
@@ -553,6 +594,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     private readonly config: ResearchWizardRuntimeConfig,
     private readonly aiConfig: SharedAiConfig,
     private readonly approvedSources: readonly SourceDescriptor[] = traskApprovedResearchSources,
+    private readonly localSearchProvider?: SearchProvider,
   ) {
     this.openAiClient = aiConfig.openAiApiKey
       ? new OpenAI({
@@ -577,6 +619,30 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
       ];
     } catch {
       return DEFAULT_RESEARCH_WIZARD_MODELS;
+    }
+  }
+
+  private async searchLocalKnowledge(query: string): Promise<LocalKnowledgeContext> {
+    if (!this.localSearchProvider) {
+      return { digest: "", sources: [] };
+    }
+
+    try {
+      const hits = await this.localSearchProvider.search(query, 4);
+      const localHits = hits.filter((hit) => !isTraskApprovedBaseUrl(hit.url));
+      if (localHits.length === 0) {
+        return { digest: "", sources: [] };
+      }
+      const digest = [
+        "Local Knowledge Context (lower authority than approved web/repo sources)",
+        ...localHits.map((hit, index) => `${index + 1}. ${hit.title}: ${hit.snippet} (${hit.url})`),
+      ].join("\n");
+      return {
+        digest,
+        sources: localHits.map((hit) => searchHitToSource(hit)),
+      };
+    } catch {
+      return { digest: "", sources: [] };
     }
   }
 
@@ -755,6 +821,14 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
     options?: ResearchWizardQueryOptions,
   ): Promise<ResearchWizardAnswer> {
     const approvedSources = applySourcePreferences(this.approvedSources, options?.sourcePreferences);
+    const localKnowledge = await this.searchLocalKnowledge(query);
+    if (localKnowledge.sources.length > 0) {
+      onProgress?.({
+        phase: "gather",
+        detail: `Loaded ${localKnowledge.sources.length} local knowledge hit${localKnowledge.sources.length === 1 ? "" : "s"} from indexed archives.`,
+        sources: localKnowledge.sources,
+      });
+    }
     try {
       const allowedDomains = researchDomainsForSources(approvedSources);
       onProgress?.({
@@ -782,7 +856,13 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
         phase: "report",
         detail: "Ranking passages and citations…",
       });
-      const relevantSources = collectRelevantSources(report, approvedSources, payload);
+      const reportWithLocalContext = localKnowledge.digest
+        ? `${report}\n\n${localKnowledge.digest}`
+        : report;
+      const relevantSources = mergeSourcesPreserveOrder(
+        collectRelevantSources(reportWithLocalContext, approvedSources, payload),
+        localKnowledge.sources,
+      );
       onProgress?.({
         phase: "sources",
         detail: relevantSources.length ? `${relevantSources.length} sources matched` : "Mapping hosts to archive catalog…",
@@ -792,7 +872,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
         phase: "compose",
         detail: "Rendering Holocron answer…",
       });
-      const answer = fallbackDiscordRewrite(report, relevantSources);
+      const answer = fallbackDiscordRewrite(reportWithLocalContext, relevantSources);
 
       return {
         answer,
@@ -803,6 +883,12 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
         phase: "compose",
         detail: "Rendering fallback Holocron answer…",
       });
+      if (localKnowledge.sources.length > 0) {
+        return {
+          answer: localKnowledgeFallbackAnswer(query, localKnowledge),
+          approvedSources: localKnowledge.sources,
+        };
+      }
       return {
         answer: degradedAnswerFallback(query, approvedSources),
         approvedSources: [],
@@ -812,14 +898,19 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
 
   /** Shorter rewrite for proactive/channel replies (still source-backed). */
   public async answerQuestionBrief(query: string): Promise<ResearchWizardBriefAnswer> {
+    const localKnowledge = await this.searchLocalKnowledge(query);
     const { report, payload } = await this.fetchResearchReport(query, buildCustomPromptBrief(), this.approvedSources);
-    const relevantSources = collectRelevantSources(report, this.approvedSources, payload);
-    const answer = await this.rewriteForDiscordBrief(query, report, relevantSources);
+    const reportWithLocalContext = localKnowledge.digest ? `${report}\n\n${localKnowledge.digest}` : report;
+    const relevantSources = mergeSourcesPreserveOrder(
+      collectRelevantSources(reportWithLocalContext, this.approvedSources, payload),
+      localKnowledge.sources,
+    );
+    const answer = await this.rewriteForDiscordBrief(query, reportWithLocalContext, relevantSources);
 
     return {
       answer,
       approvedSources: relevantSources,
-      researchReport: report,
+      researchReport: reportWithLocalContext,
     };
   }
 }
@@ -827,6 +918,7 @@ export class ResearchWizardClient implements ResearchWizardQueryHandler {
 export const createResearchWizardClient = (
   config: ResearchWizardRuntimeConfig,
   aiConfig: SharedAiConfig = loadSharedAiConfig(),
+  localSearchProvider?: SearchProvider,
 ): ResearchWizardClient => {
-  return new ResearchWizardClient(config, aiConfig);
+  return new ResearchWizardClient(config, aiConfig, traskApprovedResearchSources, localSearchProvider);
 };

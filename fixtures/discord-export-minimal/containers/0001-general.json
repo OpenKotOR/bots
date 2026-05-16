@@ -1,0 +1,29 @@
+{
+  "container_scope": "channel",
+  "channel": {
+    "id": "900000000000000001",
+    "name": "fixture-kb-test",
+    "type_name": "GuildTextChannel"
+  },
+  "messages": [
+    {
+      "id": "1000000000000000001",
+      "timestamp": "2026-01-01T12:00:00.000000+00:00",
+      "content": "Welcome to the KotOR modding discussion.",
+      "author": {
+        "username": "fixture_mod",
+        "global_name": "Fixture Mod",
+        "bot": false
+      }
+    },
+    {
+      "id": "1000000000000000002",
+      "timestamp": "2026-01-01T12:01:00.000000+00:00",
+      "content": "Holocron exports use this JSON shape for import-discord-export.",
+      "author": {
+        "username": "member_one",
+        "bot": false
+      }
+    }
+  ]
+}

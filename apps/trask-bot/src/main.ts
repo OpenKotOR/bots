@@ -20,16 +20,22 @@ import { buildErrorEmbed, buildInfoEmbed, buildSuccessEmbed } from "@openkotor/d
 import { JsonTraskQueryRepository, resolveDataFile } from "@openkotor/persistence";
 import { personaProfiles } from "@openkotor/personas";
 import { trimTrailingSlashes } from "@openkotor/platform";
-import { createDefaultSearchProvider, defaultSourceCatalog, type SourceDescriptor, type SourceKind } from "@openkotor/retrieval";
+import {
+  createChunkSearchProvider,
+  defaultSourceCatalog,
+  type SourceDescriptor,
+  type SourceKind,
+} from "@openkotor/retrieval";
 import { createResearchWizardClient } from "@openkotor/trask";
 import { isTraskThreadId } from "@openkotor/trask-http";
 
 import { registerTraskProactiveHandlers } from "./proactive-handler.js";
+import { registerTraskWelcomeHandler } from "./welcome-handler.js";
 import { startEmbeddedTraskWebUi } from "./web-server.js";
 
 const logger = createLogger("trask-bot");
 const config = loadTraskBotConfig();
-const searchProvider = createDefaultSearchProvider({ stateDir: config.chunkDir });
+const searchProvider = createChunkSearchProvider(config.chunkDir);
 const DISCORD_ASK_RESPONSE_SLA_MS = 90_000;
 const DISCORD_ASK_SYNTHESIS_FAILURE_MESSAGE = "I could not complete live archive synthesis for this question right now.";
 const researchWizardTimeoutMs = Math.min(config.researchWizard.timeoutMs, DISCORD_ASK_RESPONSE_SLA_MS);
@@ -42,7 +48,7 @@ if (researchWizardTimeoutMs !== config.researchWizard.timeoutMs) {
 const researchWizard = createResearchWizardClient({
   ...config.researchWizard,
   timeoutMs: researchWizardTimeoutMs,
-});
+}, config.ai, searchProvider);
 const queryRepository = new JsonTraskQueryRepository(resolveDataFile(config.queryDataDir, "trask-queries.json"));
 
 const traskHttpRuntime = {
@@ -523,9 +529,13 @@ const proactiveChannelIds =
 
 const proactiveRuntimeReady =
   config.proactive.enabled && proactiveChannelIds.length > 0 && Boolean(config.ai.openAiApiKey);
+const welcomeRuntimeReady = Boolean(config.welcome?.channelId && config.welcome.message);
 
 const client = createBotClient(
-  proactiveRuntimeReady ? { guildMessages: true, messageContent: true } : {},
+  {
+    ...(proactiveRuntimeReady ? { guildMessages: true, messageContent: true } : {}),
+    ...(welcomeRuntimeReady ? { guildMembers: true } : {}),
+  },
 );
 
 if (config.proactive.enabled && !proactiveRuntimeReady) {
@@ -538,6 +548,10 @@ if (config.proactive.enabled && !proactiveRuntimeReady) {
 
 if (proactiveRuntimeReady) {
   registerTraskProactiveHandlers(client, config, researchWizard, logger, queryRepository);
+}
+
+if (welcomeRuntimeReady) {
+  registerTraskWelcomeHandler(client, config, logger);
 }
 
 client.on("error", (error) => {
