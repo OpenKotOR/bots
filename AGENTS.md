@@ -20,7 +20,7 @@
 - **Build**: `pnpm build` (runs `tsc -b tsconfig.workspace.json`)
 - **Type check**: `pnpm check`
 - **Lint**: `pnpm --filter pazaak-world lint` (only pazaak-world has eslint config currently)
-- **Tests**: `node --test packages/*/dist/*.test.js apps/*/dist/*.test.js` (Node.js built-in runner; build first)
+- **Tests**: `pnpm test` (shorthand for `node --test packages/*/dist/*.test.js apps/*/dist/*.test.js`, Node.js built-in runner; build first). `pnpm test:watch` for interactive watch mode.
 
 ### Build scripts (esbuild)
 
