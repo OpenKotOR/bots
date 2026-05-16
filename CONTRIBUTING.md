@@ -13,7 +13,7 @@ pnpm check
 ```
 
 - After a **clean** `pnpm install`, run `pnpm rebuild esbuild` once (see `pnpm-workspace.yaml` `onlyBuiltDependencies`).
-- **Tests:** `node --test packages/*/dist/*.test.js apps/*/dist/*.test.js` (packages must be built first). Some packages expose `pnpm --filter <pkg> test` (e.g. `@openkotor/platform`).
+- **Tests:** `pnpm test` (shorthand for `node --test packages/*/dist/*.test.js apps/*/dist/*.test.js`; packages must be built first). Use `pnpm test:watch` for an interactive watch loop during development.
 
 ## Apps and packages
 
